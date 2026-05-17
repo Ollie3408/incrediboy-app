@@ -8,6 +8,7 @@ import {
 } from '@dnd-kit/core'
 import { motion } from 'framer-motion'
 import * as Tone from 'tone'
+import { trancePack1 } from './generated/audioPacks/trancePack1'
 import './App.css'
 
 // =============================================================================
@@ -178,6 +179,11 @@ const bundledAudioUrls = import.meta.glob<string>(
   { query: '?url', import: 'default', eager: true },
 )
 
+const bundledTrancePackAudioUrls = import.meta.glob<string>(
+  './assets/audio/generated/trance-pack-1/*.wav',
+  { query: '?url', import: 'default', eager: true },
+)
+
 function bundledFileName(path: string): string {
   return path.split('/').pop() ?? path
 }
@@ -264,7 +270,57 @@ function audioAssetFile(pad: PadDefinition): string {
   return `${pad.category}-${pad.variant + 1}.wav`
 }
 
+type TrancePackCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice'
+type TrancePackPad = (typeof trancePack1.pads)[number]
+
+const TRANCE_CATEGORY_FALLBACKS: Record<SoundCategory, TrancePackCategory[]> = {
+  beat: ['beat', 'bass', 'melody', 'fx'],
+  melody: ['melody', 'bass', 'fx'],
+  effect: ['fx', 'melody', 'bass'],
+  percussion: ['beat', 'bass', 'fx', 'melody'],
+  voice: ['voice', 'melody', 'fx'],
+}
+
+const trancePadsByCategory = trancePack1.pads.reduce(
+  (groups, pad) => {
+    groups[pad.category].push(pad)
+    return groups
+  },
+  {
+    beat: [],
+    bass: [],
+    melody: [],
+    fx: [],
+    voice: [],
+  } as Record<TrancePackCategory, TrancePackPad[]>,
+)
+
+function lookupTrancePackAudio(filename: string): string | undefined {
+  const lower = filename.toLowerCase()
+  return Object.entries(bundledTrancePackAudioUrls).find(([key]) =>
+    key.toLowerCase().endsWith(`/${lower}`),
+  )?.[1]
+}
+
+function trancePackPadForGamePad(pad: PadDefinition): TrancePackPad | undefined {
+  for (const category of TRANCE_CATEGORY_FALLBACKS[pad.category]) {
+    const candidates = trancePadsByCategory[category]
+    if (candidates.length > 0) return candidates[pad.variant % candidates.length]
+  }
+  return trancePack1.pads[pad.variant % trancePack1.pads.length]
+}
+
+function resolveTrancePackAudioSrc(pad: PadDefinition): string | undefined {
+  const packPad = trancePackPadForGamePad(pad)
+  return packPad ? lookupTrancePackAudio(packPad.audioFile) : undefined
+}
+
+const ACTIVE_PACK_PAD_COUNT = ALL_PADS.filter((pad) => resolveTrancePackAudioSrc(pad)).length
+
 function resolveAudioSrc(pad: PadDefinition): string | undefined {
+  const trancePackAudio = resolveTrancePackAudioSrc(pad)
+  if (trancePackAudio) return trancePackAudio
+
   const file = audioAssetFile(pad)
   return lookupBundledAsset(bundledAudioUrls, 'audio', file)
 }
@@ -784,6 +840,14 @@ function App() {
   }, [])
 
   useEffect(() => {
+    console.log('[audio pack] active', {
+      id: trancePack1.id,
+      name: trancePack1.name,
+      padsLoaded: ACTIVE_PACK_PAD_COUNT,
+      generatedPads: trancePack1.pads.length,
+      generatedAudioFiles: Object.keys(bundledTrancePackAudioUrls).length,
+    })
+
     ALL_PADS.forEach((pad) => {
       const previewPlayer = createTonePlayer(pad, volume, false)
       if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
