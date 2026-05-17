@@ -57,16 +57,13 @@ type SlotAssignment = PadDefinition | null
 
 type SoundEngine = {
   padId: string
-  loop: Tone.Loop
-  dispose: () => void
+  player: Tone.Player
 }
 
-type PreviewSynths = {
-  beat: Tone.MembraneSynth
-  effect: Tone.MetalSynth
-  melody: Tone.Synth
-  percussion: Tone.NoiseSynth
-  voice: Tone.Synth
+type TransportStatus = 'Playing' | 'Paused' | 'Stopped'
+
+type PreviewPlayers = {
+  players: Partial<Record<string, Tone.Player>>
   dispose: () => void
 }
 
@@ -180,6 +177,11 @@ const bundledPadUrls = import.meta.glob<string>(
   { query: '?url', import: 'default', eager: true },
 )
 
+const bundledAudioUrls = import.meta.glob<string>(
+  './assets/audio/*.wav',
+  { query: '?url', import: 'default', eager: true },
+)
+
 function bundledFileName(path: string): string {
   return path.split('/').pop() ?? path
 }
@@ -230,7 +232,7 @@ function padAssetFile(pad: PadDefinition): string {
 
 function lookupBundledAsset(
   map: Record<string, string>,
-  folder: 'characters' | 'pads',
+  folder: 'characters' | 'pads' | 'audio',
   filename: string,
 ): string | undefined {
   const exact = `./assets/${folder}/${filename}`
@@ -262,95 +264,38 @@ function resolvePadSrc(pad: PadDefinition): string {
   )
 }
 
-function createSlotEngine(pad: PadDefinition, slotIndex: number): SoundEngine {
-  const variant = pad.variant
-  const offset = slotIndex % 4
+function audioAssetFile(pad: PadDefinition): string {
+  return `${pad.category}-${pad.variant + 1}.wav`
+}
 
-  if (pad.category === 'beat') {
-    const kick = new Tone.MembraneSynth({
-      pitchDecay: 0.025,
-      octaves: 7,
-      envelope: { attack: 0.001, decay: 0.28, sustain: 0 },
-    }).toDestination()
-    kick.volume.value = -4
-    let step = 0
-    const notes = ['C1', 'D1', 'E1', 'G1', 'A1']
-    const loop = new Tone.Loop((time) => {
-      if ((step + offset) % (variant % 2 === 0 ? 2 : 3) === 0) {
-        kick.triggerAttackRelease(notes[variant % notes.length], '8n', time)
-      }
-      step += 1
-    }, '8n')
-    return { padId: pad.id, loop, dispose: () => { loop.dispose(); kick.dispose() } }
-  }
+function resolveAudioSrc(pad: PadDefinition): string | undefined {
+  const file = audioAssetFile(pad)
+  return lookupBundledAsset(bundledAudioUrls, 'audio', file)
+}
 
-  if (pad.category === 'melody') {
-    const synth = new Tone.Synth({
-      oscillator: { type: variant % 2 === 0 ? 'triangle' : 'sine' },
-      envelope: { attack: 0.015, decay: 0.18, sustain: 0.2, release: 0.35 },
-    }).toDestination()
-    synth.volume.value = -8
-    const patterns = [
-      ['E4', 'G4', 'B4', 'G4'],
-      ['A3', 'C4', 'E4', 'C4'],
-      ['D4', 'F#4', 'A4', 'F#4'],
-      ['G3', 'B3', 'D4', 'E4'],
-      ['C4', 'E4', 'G4', 'B4'],
-    ]
-    let step = 0
-    const notes = patterns[variant % patterns.length]
-    const loop = new Tone.Loop((time) => {
-      synth.triggerAttackRelease(notes[(step + offset) % notes.length], '8n', time)
-      step += 1
-    }, '4n')
-    return { padId: pad.id, loop, dispose: () => { loop.dispose(); synth.dispose() } }
-  }
+function volumeDb(volume: number): number {
+  return volume <= 0 ? -Infinity : (volume - 100) * 0.36
+}
 
-  if (pad.category === 'effect') {
-    const metal = new Tone.MetalSynth({
-      harmonicity: 6 + variant,
-      resonance: 450 + variant * 120,
-      modulationIndex: 18,
-      envelope: { decay: 0.16 + variant * 0.025 },
-    }).toDestination()
-    metal.volume.value = -11
-    let step = 0
-    const loop = new Tone.Loop((time) => {
-      if ((step + offset) % 2 === 0) metal.triggerAttackRelease('32n', time)
-      step += 1
-    }, '4n')
-    return { padId: pad.id, loop, dispose: () => { loop.dispose(); metal.dispose() } }
-  }
+function createTonePlayer(
+  pad: PadDefinition,
+  volume: number,
+  loop: boolean,
+): Tone.Player | null {
+  const url = resolveAudioSrc(pad)
+  if (!url) return null
 
-  if (pad.category === 'percussion') {
-    const noise = new Tone.NoiseSynth({
-      noise: { type: variant % 2 === 0 ? 'white' : 'pink' },
-      envelope: { attack: 0.001, decay: 0.055 + variant * 0.012, sustain: 0 },
-    }).toDestination()
-    noise.volume.value = -12
-    let step = 0
-    const loop = new Tone.Loop((time) => {
-      if ((step + offset) % (variant % 3 === 0 ? 1 : 2) === 0) {
-        noise.triggerAttackRelease('16n', time)
-      }
-      step += 1
-    }, '8n')
-    return { padId: pad.id, loop, dispose: () => { loop.dispose(); noise.dispose() } }
-  }
-
-  const voice = new Tone.AMSynth({
-    harmonicity: 1.5 + variant * 0.2,
-    oscillator: { type: 'sine' },
-    envelope: { attack: 0.02, decay: 0.18, sustain: 0.25, release: 0.45 },
+  const player = new Tone.Player({
+    url,
+    loop,
+    autostart: false,
+    fadeIn: 0,
+    fadeOut: 0,
   }).toDestination()
-  voice.volume.value = -9
-  const notes = ['A3', 'C4', 'D4', 'E4', 'G4']
-  let step = 0
-  const loop = new Tone.Loop((time) => {
-    voice.triggerAttackRelease(notes[(step + variant + offset) % notes.length], '4n', time)
-    step += 1
-  }, '2n')
-  return { padId: pad.id, loop, dispose: () => { loop.dispose(); voice.dispose() } }
+
+  player.volume.value = volumeDb(volume)
+  player.loop = loop
+  return player
 }
 
 // =============================================================================
@@ -706,6 +651,7 @@ function CharacterSlot({
         type="button"
         className="character-slot__body"
         onClick={() => onSlotClick(index)}
+        title={assignment ? `Click to ${muted ? 'unmute' : 'mute'} ${assignment.label}` : 'Empty slot'}
         aria-label={
           assignment
             ? `Character ${index + 1}, ${assignment.label}${muted ? ', muted' : ''}`
@@ -717,6 +663,7 @@ function CharacterSlot({
           slotIndex={index}
           muted={muted}
         />
+        {assignment && muted && <span className="character-slot__mute-badge">MUTED</span>}
       </button>
       {assignment && (
         <button
@@ -746,12 +693,17 @@ function App() {
   const [mutedSlots, setMutedSlots] = useState<Set<number>>(() => new Set())
   const [selectedPadId, setSelectedPadId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [transportStatus, setTransportStatus] = useState<TransportStatus>('Stopped')
   const [audioReady, setAudioReady] = useState(false)
   const [volume, setVolume] = useState(80)
   const [bpm, setBpm] = useState(DEFAULT_BPM)
 
-  const enginesRef = useRef<Partial<Record<number, SoundEngine>>>({})
-  const previewRef = useRef<PreviewSynths | null>(null)
+  const activePlayersRef = useRef<Map<number, SoundEngine>>(new Map())
+  const assignedPlayerPoolRef = useRef<Map<string, Tone.Player>>(new Map())
+  const previewRef = useRef<PreviewPlayers>({
+    players: {},
+    dispose: () => undefined,
+  })
 
   const assignments = useMemo(
     () =>
@@ -763,151 +715,158 @@ function App() {
     await Tone.start()
     await Tone.getContext().resume()
     Tone.getTransport().bpm.value = bpm
-    Tone.getDestination().volume.value = volume === 0 ? -Infinity : (volume - 100) * 0.36
-
-    if (previewRef.current) {
-      setAudioReady(true)
-      return
-    }
-
-    const previewBeat = new Tone.MembraneSynth({
-      pitchDecay: 0.05,
-      octaves: 4,
-      envelope: { attack: 0.001, decay: 0.25, sustain: 0 },
-    }).toDestination()
-    previewBeat.volume.value = -2
-
-    const previewEffect = new Tone.MetalSynth({
-      harmonicity: 8,
-      resonance: 400,
-      envelope: { decay: 0.12 },
-    }).toDestination()
-    previewEffect.volume.value = -8
-
-    const previewMelody = new Tone.Synth({
-      oscillator: { type: 'triangle' },
-      envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.25 },
-    }).toDestination()
-    previewMelody.volume.value = -6
-
-    const previewPerc = new Tone.NoiseSynth({
-      noise: { type: 'pink' },
-      envelope: { attack: 0.001, decay: 0.08, sustain: 0 },
-    }).toDestination()
-    previewPerc.volume.value = -10
-
-    const previewVoice = new Tone.Synth({
-      oscillator: { type: 'sine' },
-      envelope: { attack: 0.02, decay: 0.15, sustain: 0.2, release: 0.3 },
-    }).toDestination()
-    previewVoice.volume.value = -6
-
-    previewRef.current = {
-      beat: previewBeat,
-      effect: previewEffect,
-      melody: previewMelody,
-      percussion: previewPerc,
-      voice: previewVoice,
-      dispose: () => {
-        previewBeat.dispose()
-        previewEffect.dispose()
-        previewMelody.dispose()
-        previewPerc.dispose()
-        previewVoice.dispose()
-      },
-    }
-
+    Tone.getTransport().loop = true
+    Tone.getTransport().loopStart = 0
+    Tone.getTransport().loopEnd = '4m'
     setAudioReady(true)
-  }, [bpm, volume])
+  }, [bpm])
 
   useEffect(() => {
+    ALL_PADS.forEach((pad) => {
+      const assignedPlayer = createTonePlayer(pad, volume, true)
+      const previewPlayer = createTonePlayer(pad, volume, false)
+      if (assignedPlayer) assignedPlayerPoolRef.current.set(pad.id, assignedPlayer)
+      if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
+    })
+
+    Tone.loaded().then(() => {
+      console.log('[audio] all files loaded', {
+        count: assignedPlayerPoolRef.current.size,
+        loopEnd: Tone.getTransport().loopEnd,
+      })
+    })
+
     return () => {
       Tone.getTransport().stop()
       Tone.getTransport().cancel()
-      previewRef.current?.dispose()
-      previewRef.current = null
-      Object.values(enginesRef.current).forEach((e) => e?.dispose())
-      enginesRef.current = {}
+      activePlayersRef.current.forEach((engine) => {
+        engine.player.stop()
+        engine.player.unsync()
+      })
+      activePlayersRef.current.clear()
+      assignedPlayerPoolRef.current.forEach((player) => player.dispose())
+      assignedPlayerPoolRef.current.clear()
+      Object.values(previewRef.current.players).forEach((player) => player?.dispose())
+      previewRef.current.players = {}
     }
   }, [])
 
   useEffect(() => {
-    Tone.getTransport().bpm.rampTo(bpm, 0.08)
+    Tone.getTransport().bpm.value = bpm
   }, [bpm])
 
   useEffect(() => {
-    Tone.getDestination().volume.rampTo(
-      volume === 0 ? -Infinity : (volume - 100) * 0.36,
-      0.05,
-    )
+    const db = volumeDb(volume)
+    activePlayersRef.current.forEach((engine) => {
+      engine.player.volume.value = db
+    })
+    assignedPlayerPoolRef.current.forEach((player) => {
+      player.volume.value = db
+    })
+    Object.values(previewRef.current.players).forEach((player) => {
+      if (player) player.volume.value = db
+    })
   }, [volume])
 
   const previewPad = useCallback(
     async (pad: PadDefinition) => {
       await initAudio()
-      const preview = previewRef.current
-      if (!preview) return
-
-      const beatNotes = ['C2', 'D2', 'E2', 'F2', 'G2']
-      const melodyNotes = ['E4', 'G4', 'B4', 'D5', 'E5']
-      const voiceNotes = ['A3', 'C4', 'D4', 'E4', 'G4']
-      const v = pad.variant
-      const t = Tone.now() + 0.02
-
-      switch (pad.category) {
-        case 'beat':
-          preview.beat.triggerAttackRelease(beatNotes[v % beatNotes.length], '8n', t)
-          break
-        case 'effect':
-          preview.effect.triggerAttackRelease('16n', t)
-          break
-        case 'melody':
-          preview.melody.triggerAttackRelease(melodyNotes[v % melodyNotes.length], '8n', t)
-          break
-        case 'percussion':
-          preview.percussion.triggerAttackRelease('16n', t)
-          break
-        case 'voice':
-          preview.voice.triggerAttackRelease(voiceNotes[v % voiceNotes.length], '8n', t)
-          break
-        default:
-          break
-      }
+      const player = previewRef.current.players[pad.id]
+      if (!player) return
+      player.stop()
+      player.start(undefined, 0, '1m')
     },
     [initAudio],
   )
 
-  const assignPadToSlot = useCallback((padId: string, slotIndex: number) => {
-    setSlots((prev) => {
-      const next = [...prev]
-      for (let i = 0; i < next.length; i += 1) {
-        if (next[i] === padId) next[i] = null
-      }
-      next[slotIndex] = padId
-      return next
+  const disposeSlotPlayer = useCallback((slotIndex: number) => {
+    const engine = activePlayersRef.current.get(slotIndex)
+    if (!engine) return
+    engine.player.stop()
+    engine.player.unsync()
+    engine.player.mute = false
+    activePlayersRef.current.delete(slotIndex)
+    console.log('[audio] player disposed', { slotIndex, padId: engine.padId })
+  }, [])
+
+  const configureTransport = useCallback(() => {
+    Tone.getTransport().bpm.value = bpm
+    Tone.getTransport().loop = true
+    Tone.getTransport().loopStart = 0
+    Tone.getTransport().loopEnd = '4m'
+  }, [bpm])
+
+  const scheduleSlotPlayer = useCallback((engine: SoundEngine, slotIndex: number) => {
+    engine.player.stop()
+    engine.player.unsync()
+    engine.player.loop = true
+    engine.player.fadeIn = 0
+    engine.player.fadeOut = 0
+    engine.player.playbackRate = bpm / DEFAULT_BPM
+    engine.player.volume.value = volumeDb(volume)
+    engine.player.mute = mutedSlots.has(slotIndex)
+    engine.player.sync().start(0)
+  }, [bpm, mutedSlots, volume])
+
+  const syncActivePlayers = useCallback(() => {
+    activePlayersRef.current.forEach((engine, slotIndex) => {
+      engine.player.playbackRate = bpm / DEFAULT_BPM
+      engine.player.volume.value = volumeDb(volume)
+      engine.player.mute = mutedSlots.has(slotIndex)
     })
+  }, [bpm, mutedSlots, volume])
+
+  const createAssignedPlayer = useCallback((pad: PadDefinition, slotIndex: number) => {
+    disposeSlotPlayer(slotIndex)
+    const player = assignedPlayerPoolRef.current.get(pad.id)
+    if (!player) return
+    const engine = { padId: pad.id, player }
+    activePlayersRef.current.set(slotIndex, engine)
+    scheduleSlotPlayer(engine, slotIndex)
+    console.log('[audio] player assigned', { slotIndex, padId: pad.id })
+  }, [disposeSlotPlayer, scheduleSlotPlayer])
+
+  const assignPadToSlot = useCallback((padId: string, slotIndex: number) => {
+    const pad = PAD_BY_ID[padId]
+    if (!pad) return
+
+    const next = [...slots]
+    for (let i = 0; i < next.length; i += 1) {
+      if (next[i] === padId || i === slotIndex) {
+        next[i] = null
+        disposeSlotPlayer(i)
+      }
+    }
+    next[slotIndex] = padId
+    createAssignedPlayer(pad, slotIndex)
+    setSlots(next)
     setMutedSlots((prev) => {
       const next = new Set(prev)
       next.delete(slotIndex)
       return next
     })
-  }, [])
+  }, [createAssignedPlayer, disposeSlotPlayer, slots])
 
   const assignToFirstEmpty = useCallback((padId: string) => {
-    setSlots((prev) => {
-      const existing = prev.indexOf(padId)
-      if (existing !== -1) {
-        const next = [...prev]
-        next[existing] = null
-        return next
-      }
-      const empty = prev.indexOf(null)
-      if (empty === -1) return prev
-      const next = [...prev]
-      next[empty] = padId
-      return next
-    })
-  }, [])
+    const pad = PAD_BY_ID[padId]
+    if (!pad) return
+
+    const existing = slots.indexOf(padId)
+    if (existing !== -1) {
+      const next = [...slots]
+      next[existing] = null
+      disposeSlotPlayer(existing)
+      setSlots(next)
+      return
+    }
+
+    const empty = slots.indexOf(null)
+    if (empty === -1) return
+    const next = [...slots]
+    next[empty] = padId
+    createAssignedPlayer(pad, empty)
+    setSlots(next)
+  }, [createAssignedPlayer, disposeSlotPlayer, slots])
 
   const handlePadSelect = useCallback(
     async (padId: string) => {
@@ -927,8 +886,11 @@ function App() {
       if (slots[index]) {
         setMutedSlots((prev) => {
           const next = new Set(prev)
-          if (next.has(index)) next.delete(index)
+          const muted = next.has(index)
+          if (muted) next.delete(index)
           else next.add(index)
+          const engine = activePlayersRef.current.get(index)
+          if (engine) engine.player.mute = !muted
           return next
         })
         return
@@ -961,39 +923,21 @@ function App() {
 
   const syncLoops = useCallback(
     (playing: boolean) => {
-      assignments.forEach((pad, i) => {
-        const engine = enginesRef.current[i]
-        if (!pad) {
-          engine?.dispose()
-          delete enginesRef.current[i]
-          return
-        }
-
-        if (!engine || engine.padId !== pad.id) {
-          engine?.dispose()
-          enginesRef.current[i] = createSlotEngine(pad, i)
-        }
-
-        const nextEngine = enginesRef.current[i]
-        if (!nextEngine) return
-        nextEngine.loop.stop()
-        if (playing && !mutedSlots.has(i)) nextEngine.loop.start(0)
-      })
-
-      Object.keys(enginesRef.current).forEach((slot) => {
-        const index = Number(slot)
-        if (!assignments[index]) {
-          enginesRef.current[index]?.dispose()
-          delete enginesRef.current[index]
-        }
-      })
+      if (playing) syncActivePlayers()
+      else activePlayersRef.current.forEach((engine) => engine.player.mute = true)
     },
-    [assignments, mutedSlots],
+    [syncActivePlayers],
   )
 
   const removeFromSlot = useCallback((index: number) => {
-    enginesRef.current[index]?.dispose()
-    delete enginesRef.current[index]
+    disposeSlotPlayer(index)
+    console.log('[audio] audio removed', { slotIndex: index })
+    const hasRemainingAssigned = slots.some((slot, i) => i !== index && slot)
+    if (isPlaying && !hasRemainingAssigned) {
+      Tone.getTransport().stop()
+      setIsPlaying(false)
+      setTransportStatus('Stopped')
+    }
     setSlots((prev) => {
       const next = [...prev]
       next[index] = null
@@ -1004,7 +948,7 @@ function App() {
       next.delete(index)
       return next
     })
-  }, [])
+  }, [disposeSlotPlayer, isPlaying, slots])
 
   const handlePlayPause = useCallback(async () => {
     await initAudio()
@@ -1012,36 +956,49 @@ function App() {
     if (isPlaying) {
       Tone.getTransport().pause()
       setIsPlaying(false)
+      setTransportStatus('Paused')
       return
     }
 
     const hasActive = assignments.some((p, i) => p && !mutedSlots.has(i))
-    if (!hasActive) return
+    if (!hasActive) {
+      setTransportStatus('Stopped')
+      return
+    }
 
-    Object.values(enginesRef.current).forEach((engine) => engine?.loop.stop())
-
+    configureTransport()
     Tone.getTransport().stop()
     Tone.getTransport().position = 0
-    syncLoops(true)
-    Tone.getTransport().start()
+    activePlayersRef.current.forEach((engine, slotIndex) => {
+      scheduleSlotPlayer(engine, slotIndex)
+    })
+    Tone.getTransport().start('+0.1')
+    console.log('[audio] transport started', {
+      position: Tone.getTransport().position,
+      loopEnd: Tone.getTransport().loopEnd,
+    })
     setIsPlaying(true)
-  }, [initAudio, isPlaying, assignments, mutedSlots, syncLoops])
+    setTransportStatus('Playing')
+  }, [configureTransport, initAudio, isPlaying, assignments, mutedSlots, scheduleSlotPlayer])
 
   const handleStopReset = useCallback(() => {
     Tone.getTransport().stop()
-    Tone.getTransport().cancel()
-    Tone.getTransport().position = 0
-    Object.values(enginesRef.current).forEach((engine) => engine?.dispose())
-    enginesRef.current = {}
+    activePlayersRef.current.forEach((engine) => {
+      engine.player.stop()
+      engine.player.unsync()
+      engine.player.mute = false
+    })
+    activePlayersRef.current.clear()
     setIsPlaying(false)
+    setTransportStatus('Stopped')
     setSlots(Array(SLOT_COUNT).fill(null))
     setMutedSlots(new Set())
     setSelectedPadId(null)
   }, [])
 
   useEffect(() => {
-    if (isPlaying) syncLoops(true)
-  }, [slots, mutedSlots, isPlaying, syncLoops])
+    syncLoops(isPlaying)
+  }, [mutedSlots, isPlaying, syncLoops])
 
   const filledCount = slots.filter(Boolean).length
   const usedPadIds = useMemo(() => new Set(slots.filter(Boolean) as string[]), [slots])
@@ -1080,7 +1037,7 @@ function App() {
       <motion.div className="control-bar">
         <div className="control-bar__left">
           <h1 className="control-bar__logo">INCrediBOY</h1>
-          <button type="button" className="control-bar__menu" aria-label="Menu">
+          <button type="button" className="control-bar__menu" aria-label="Menu disabled" disabled>
             <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
               <rect y="0" width="22" height="2.5" rx="1" fill="#333" />
               <rect y="6.5" width="22" height="2.5" rx="1" fill="#333" />
@@ -1114,6 +1071,9 @@ function App() {
               </svg>
             </button>
           ))}
+          <span className={`control-bar__status control-bar__status--${transportStatus.toLowerCase()}`}>
+            {transportStatus}
+          </span>
         </div>
         <div className="control-bar__transport">
           <label className="control-bar__field">
