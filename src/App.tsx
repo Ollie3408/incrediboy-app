@@ -55,11 +55,6 @@ type PadDefinition = {
 
 type SlotAssignment = PadDefinition | null
 
-type SoundEngine = {
-  padId: string
-  player: Tone.Player
-}
-
 type TransportStatus = 'Playing' | 'Paused' | 'Stopped'
 
 type PreviewPlayers = {
@@ -271,6 +266,10 @@ function audioAssetFile(pad: PadDefinition): string {
 function resolveAudioSrc(pad: PadDefinition): string | undefined {
   const file = audioAssetFile(pad)
   return lookupBundledAsset(bundledAudioUrls, 'audio', file)
+}
+
+function normalizedVolume(volume: number): number {
+  return Math.min(1, Math.max(0, volume / 100))
 }
 
 function volumeDb(volume: number): number {
@@ -697,9 +696,19 @@ function App() {
   const [audioReady, setAudioReady] = useState(false)
   const [volume, setVolume] = useState(80)
   const [bpm, setBpm] = useState(DEFAULT_BPM)
+  const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
+  const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
 
-  const activePlayersRef = useRef<Map<number, SoundEngine>>(new Map())
-  const assignedPlayerPoolRef = useRef<Map<string, Tone.Player>>(new Map())
+  const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
+  const isPlayingRef = useRef(false)
+  const mutedSlotsRef = useRef<Set<number>>(new Set())
+  const volumeRef = useRef(volume)
+  const diagnosticNativeAudioRef = useRef<HTMLAudioElement | null>(null)
+  const diagnosticTonePlayerRef = useRef<Tone.Player | null>(null)
+  const diagnosticNativeIntervalRef = useRef<number | null>(null)
+  const assignedDebugIntervalsRef = useRef<Map<number, number>>(new Map())
+  const diagnosticToneIntervalRef = useRef<number | null>(null)
+  const diagnosticToneStartedAtRef = useRef<number | null>(null)
   const previewRef = useRef<PreviewPlayers>({
     players: {},
     dispose: () => undefined,
@@ -711,196 +720,222 @@ function App() {
     [slots],
   )
 
-  const initAudio = useCallback(async () => {
-    await Tone.start()
-    await Tone.getContext().resume()
-    Tone.getTransport().bpm.value = bpm
-    Tone.getTransport().loop = true
-    Tone.getTransport().loopStart = 0
-    Tone.getTransport().loopEnd = '4m'
-    setAudioReady(true)
-  }, [bpm])
+  useEffect(() => {
+    isPlayingRef.current = isPlaying
+  }, [isPlaying])
+
+  useEffect(() => {
+    mutedSlotsRef.current = mutedSlots
+  }, [mutedSlots])
+
+  useEffect(() => {
+    volumeRef.current = volume
+  }, [volume])
+
+  const clearAssignedDebugInterval = useCallback((slotIndex: number) => {
+    const interval = assignedDebugIntervalsRef.current.get(slotIndex)
+    if (interval === undefined) return
+    window.clearInterval(interval)
+    assignedDebugIntervalsRef.current.delete(slotIndex)
+  }, [])
+
+  const clearAllAssignedDebugIntervals = useCallback(() => {
+    assignedDebugIntervalsRef.current.forEach((interval) => window.clearInterval(interval))
+    assignedDebugIntervalsRef.current.clear()
+  }, [])
+
+  const clearDiagnosticNativeTest = useCallback(() => {
+    if (diagnosticNativeIntervalRef.current !== null) {
+      window.clearInterval(diagnosticNativeIntervalRef.current)
+      diagnosticNativeIntervalRef.current = null
+    }
+    const audio = diagnosticNativeAudioRef.current
+    if (!audio) return
+    audio.pause()
+    audio.onended = null
+    audio.onerror = null
+    audio.onloadedmetadata = null
+    audio.oncanplaythrough = null
+    audio.currentTime = 0
+    audio.removeAttribute('src')
+    audio.load()
+    diagnosticNativeAudioRef.current = null
+  }, [])
+
+  const clearDiagnosticToneTest = useCallback(() => {
+    if (diagnosticToneIntervalRef.current !== null) {
+      window.clearInterval(diagnosticToneIntervalRef.current)
+      diagnosticToneIntervalRef.current = null
+    }
+    diagnosticToneStartedAtRef.current = null
+    const player = diagnosticTonePlayerRef.current
+    if (!player) return
+    player.stop()
+    player.dispose()
+    diagnosticTonePlayerRef.current = null
+  }, [])
 
   useEffect(() => {
     ALL_PADS.forEach((pad) => {
-      const assignedPlayer = createTonePlayer(pad, volume, true)
       const previewPlayer = createTonePlayer(pad, volume, false)
-      if (assignedPlayer) assignedPlayerPoolRef.current.set(pad.id, assignedPlayer)
       if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
     })
 
     Tone.loaded().then(() => {
       console.log('[audio] all files loaded', {
-        count: assignedPlayerPoolRef.current.size,
-        loopEnd: Tone.getTransport().loopEnd,
+        count: Object.keys(previewRef.current.players).length,
       })
     })
 
     return () => {
-      Tone.getTransport().stop()
-      Tone.getTransport().cancel()
-      activePlayersRef.current.forEach((engine) => {
-        engine.player.stop()
-        engine.player.unsync()
-      })
-      activePlayersRef.current.clear()
-      assignedPlayerPoolRef.current.forEach((player) => player.dispose())
-      assignedPlayerPoolRef.current.clear()
       Object.values(previewRef.current.players).forEach((player) => player?.dispose())
       previewRef.current.players = {}
+      clearDiagnosticNativeTest()
+      clearDiagnosticToneTest()
     }
-  }, [])
-
-  useEffect(() => {
-    Tone.getTransport().bpm.value = bpm
-  }, [bpm])
+  }, [clearDiagnosticNativeTest, clearDiagnosticToneTest])
 
   useEffect(() => {
     const db = volumeDb(volume)
-    activePlayersRef.current.forEach((engine) => {
-      engine.player.volume.value = db
-    })
-    assignedPlayerPoolRef.current.forEach((player) => {
-      player.volume.value = db
-    })
     Object.values(previewRef.current.players).forEach((player) => {
       if (player) player.volume.value = db
     })
   }, [volume])
 
-  const previewPad = useCallback(
-    async (pad: PadDefinition) => {
-      await initAudio()
-      const player = previewRef.current.players[pad.id]
-      if (!player) return
-      player.stop()
-      player.start(undefined, 0, '1m')
-    },
-    [initAudio],
-  )
+  useEffect(() => {
+    return () => {
+      clearAllAssignedDebugIntervals()
+    }
+  }, [clearAllAssignedDebugIntervals])
 
-  const disposeSlotPlayer = useCallback((slotIndex: number) => {
-    const engine = activePlayersRef.current.get(slotIndex)
-    if (!engine) return
-    engine.player.stop()
-    engine.player.unsync()
-    engine.player.mute = false
-    activePlayersRef.current.delete(slotIndex)
-    console.log('[audio] player disposed', { slotIndex, padId: engine.padId })
+  const playAssignedAudio = useCallback(async (slotIndex: number) => {
+    const audio = assignedAudioRef.current.get(slotIndex)
+    if (!audio) return
+    audio.currentTime = 0
+    audio.loop = true
+    audio.volume = normalizedVolume(volumeRef.current)
+    audio.muted = mutedSlotsRef.current.has(slotIndex)
+    try {
+      await audio.play()
+      console.log('[assigned] play resolved', slotIndex)
+    } catch (error) {
+      console.warn('[assigned] play failed', { slot: slotIndex, url: audio.src, error })
+    }
+    console.log('[assigned] playing', {
+      slot: slotIndex,
+      url: audio.src,
+      duration: audio.duration,
+      loop: audio.loop,
+      paused: audio.paused,
+    })
+    if (!assignedDebugIntervalsRef.current.has(slotIndex)) {
+      const interval = window.setInterval(() => {
+        console.log('[assigned] currentTime', {
+          slot: slotIndex,
+          currentTime: audio.currentTime,
+          duration: audio.duration,
+          paused: audio.paused,
+          loop: audio.loop,
+        })
+      }, 1000)
+      assignedDebugIntervalsRef.current.set(slotIndex, interval)
+    }
   }, [])
 
-  const configureTransport = useCallback(() => {
-    Tone.getTransport().bpm.value = bpm
-    Tone.getTransport().loop = true
-    Tone.getTransport().loopStart = 0
-    Tone.getTransport().loopEnd = '4m'
-  }, [bpm])
+  const disposeAssignedAudio = useCallback((slotIndex: number) => {
+    const audio = assignedAudioRef.current.get(slotIndex)
+    if (!audio) return
+    clearAssignedDebugInterval(slotIndex)
+    audio.pause()
+    audio.currentTime = 0
+    assignedAudioRef.current.delete(slotIndex)
+    console.log('[assigned] removed', { slot: slotIndex, url: audio.src })
+  }, [clearAssignedDebugInterval])
 
-  const scheduleSlotPlayer = useCallback((engine: SoundEngine, slotIndex: number) => {
-    engine.player.stop()
-    engine.player.unsync()
-    engine.player.loop = true
-    engine.player.fadeIn = 0
-    engine.player.fadeOut = 0
-    engine.player.playbackRate = bpm / DEFAULT_BPM
-    engine.player.volume.value = volumeDb(volume)
-    engine.player.mute = mutedSlots.has(slotIndex)
-    engine.player.sync().start(0)
-  }, [bpm, mutedSlots, volume])
+  const createAssignedAudio = useCallback(async (pad: PadDefinition, slotIndex: number) => {
+    disposeAssignedAudio(slotIndex)
+    const url = resolveAudioSrc(pad)
+    if (!url) return
 
-  const syncActivePlayers = useCallback(() => {
-    activePlayersRef.current.forEach((engine, slotIndex) => {
-      engine.player.playbackRate = bpm / DEFAULT_BPM
-      engine.player.volume.value = volumeDb(volume)
-      engine.player.mute = mutedSlots.has(slotIndex)
+    const audio = new Audio(url)
+    audio.loop = true
+    audio.preload = 'auto'
+    audio.volume = normalizedVolume(volumeRef.current)
+    audio.onpause = () => console.log('[assigned] paused', slotIndex)
+    audio.onended = () => console.log('[assigned] ended', slotIndex)
+    audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
+    assignedAudioRef.current.set(slotIndex, audio)
+
+    if (pad.id === 'beat-0') {
+      setAssignedBeatOneUrl(audio.src)
+    }
+
+    console.log('[assigned] created', {
+      slot: slotIndex,
+      url: audio.src,
+      loop: audio.loop,
     })
-  }, [bpm, mutedSlots, volume])
 
-  const createAssignedPlayer = useCallback((pad: PadDefinition, slotIndex: number) => {
-    disposeSlotPlayer(slotIndex)
-    const player = assignedPlayerPoolRef.current.get(pad.id)
-    if (!player) return
-    const engine = { padId: pad.id, player }
-    activePlayersRef.current.set(slotIndex, engine)
-    scheduleSlotPlayer(engine, slotIndex)
-    console.log('[audio] player assigned', { slotIndex, padId: pad.id })
-  }, [disposeSlotPlayer, scheduleSlotPlayer])
+    await playAssignedAudio(slotIndex)
+    isPlayingRef.current = true
+    setIsPlaying(true)
+    setTransportStatus('Playing')
+  }, [disposeAssignedAudio, playAssignedAudio])
 
-  const assignPadToSlot = useCallback((padId: string, slotIndex: number) => {
+  const assignPadToSlot = useCallback(async (padId: string, slotIndex: number) => {
     const pad = PAD_BY_ID[padId]
     if (!pad) return
 
     const next = [...slots]
+    const clearedSlots: number[] = []
     for (let i = 0; i < next.length; i += 1) {
       if (next[i] === padId || i === slotIndex) {
         next[i] = null
-        disposeSlotPlayer(i)
+        clearedSlots.push(i)
+        disposeAssignedAudio(i)
       }
     }
     next[slotIndex] = padId
-    createAssignedPlayer(pad, slotIndex)
+    await createAssignedAudio(pad, slotIndex)
     setSlots(next)
     setMutedSlots((prev) => {
       const next = new Set(prev)
-      next.delete(slotIndex)
+      clearedSlots.forEach((clearedSlot) => next.delete(clearedSlot))
+      mutedSlotsRef.current = next
       return next
     })
-  }, [createAssignedPlayer, disposeSlotPlayer, slots])
-
-  const assignToFirstEmpty = useCallback((padId: string) => {
-    const pad = PAD_BY_ID[padId]
-    if (!pad) return
-
-    const existing = slots.indexOf(padId)
-    if (existing !== -1) {
-      const next = [...slots]
-      next[existing] = null
-      disposeSlotPlayer(existing)
-      setSlots(next)
-      return
-    }
-
-    const empty = slots.indexOf(null)
-    if (empty === -1) return
-    const next = [...slots]
-    next[empty] = padId
-    createAssignedPlayer(pad, empty)
-    setSlots(next)
-  }, [createAssignedPlayer, disposeSlotPlayer, slots])
+  }, [createAssignedAudio, disposeAssignedAudio, slots])
 
   const handlePadSelect = useCallback(
-    async (padId: string) => {
+    (padId: string) => {
       const pad = PAD_BY_ID[padId]
       if (!pad) return
-      await initAudio()
       setSelectedPadId(padId)
-      await previewPad(pad)
-      assignToFirstEmpty(padId)
     },
-    [initAudio, previewPad, assignToFirstEmpty],
+    [],
   )
 
   const handleSlotClick = useCallback(
     async (index: number) => {
-      await initAudio()
       if (slots[index]) {
         setMutedSlots((prev) => {
           const next = new Set(prev)
           const muted = next.has(index)
           if (muted) next.delete(index)
           else next.add(index)
-          const engine = activePlayersRef.current.get(index)
-          if (engine) engine.player.mute = !muted
+          mutedSlotsRef.current = next
+          const audio = assignedAudioRef.current.get(index)
+          if (audio) {
+            audio.muted = !muted
+            if (muted && isPlayingRef.current) void playAssignedAudio(index)
+            else audio.pause()
+          }
           return next
         })
         return
       }
-      if (selectedPadId) {
-        assignPadToSlot(selectedPadId, index)
-        await previewPad(PAD_BY_ID[selectedPadId])
-      }
     },
-    [initAudio, slots, selectedPadId, assignPadToSlot, previewPad],
+    [slots, playAssignedAudio],
   )
 
   const handleDragEnd = useCallback(
@@ -912,29 +947,20 @@ function App() {
 
       const index = Number.parseInt(overId.replace('slot-', ''), 10)
       if (Number.isNaN(index)) return
+      if (slots[index]) return
 
-      await initAudio()
+      setAudioReady(true)
       setSelectedPadId(padId)
-      assignPadToSlot(padId, index)
-      await previewPad(pad)
+      await assignPadToSlot(padId, index)
     },
-    [initAudio, assignPadToSlot, previewPad],
-  )
-
-  const syncLoops = useCallback(
-    (playing: boolean) => {
-      if (playing) syncActivePlayers()
-      else activePlayersRef.current.forEach((engine) => engine.player.mute = true)
-    },
-    [syncActivePlayers],
+    [assignPadToSlot, slots],
   )
 
   const removeFromSlot = useCallback((index: number) => {
-    disposeSlotPlayer(index)
-    console.log('[audio] audio removed', { slotIndex: index })
+    disposeAssignedAudio(index)
     const hasRemainingAssigned = slots.some((slot, i) => i !== index && slot)
     if (isPlaying && !hasRemainingAssigned) {
-      Tone.getTransport().stop()
+      isPlayingRef.current = false
       setIsPlaying(false)
       setTransportStatus('Stopped')
     }
@@ -946,62 +972,194 @@ function App() {
     setMutedSlots((prev) => {
       const next = new Set(prev)
       next.delete(index)
+      mutedSlotsRef.current = next
       return next
     })
-  }, [disposeSlotPlayer, isPlaying, slots])
+  }, [disposeAssignedAudio, isPlaying, slots])
 
-  const handlePlayPause = useCallback(async () => {
-    await initAudio()
-
-    if (isPlaying) {
-      Tone.getTransport().pause()
-      setIsPlaying(false)
-      setTransportStatus('Paused')
-      return
-    }
-
-    const hasActive = assignments.some((p, i) => p && !mutedSlots.has(i))
-    if (!hasActive) {
+  const playAssignedAudioNow = useCallback(async () => {
+    console.log('[PLAY LOOPS] clicked')
+    console.log('[PLAY LOOPS] calling working function')
+    if (assignedAudioRef.current.size === 0) {
       setTransportStatus('Stopped')
       return
     }
 
-    configureTransport()
-    Tone.getTransport().stop()
-    Tone.getTransport().position = 0
-    activePlayersRef.current.forEach((engine, slotIndex) => {
-      scheduleSlotPlayer(engine, slotIndex)
+    for (const [slot, audio] of assignedAudioRef.current) {
+      audio.loop = true
+      audio.currentTime = 0
+      console.log('[play button] playing slot', slot)
+      try {
+        await audio.play()
+        console.log('[assigned] play resolved', slot)
+      } catch (error) {
+        console.warn('[assigned] play failed', { slot, url: audio.src, error })
+      }
+
+      console.log('[assigned] playing', {
+        slot,
+        url: audio.src,
+        duration: audio.duration,
+        loop: audio.loop,
+        paused: audio.paused,
+      })
+
+      if (!assignedDebugIntervalsRef.current.has(slot)) {
+        const interval = window.setInterval(() => {
+          console.log('[assigned] currentTime', {
+            slot,
+            currentTime: audio.currentTime,
+            duration: audio.duration,
+            paused: audio.paused,
+            loop: audio.loop,
+          })
+        }, 1000)
+
+        assignedDebugIntervalsRef.current.set(slot, interval)
+      }
+    }
+    console.log('[audio] native assigned playback started', {
+      activeSlots: assignedAudioRef.current.size,
     })
-    Tone.getTransport().start('+0.1')
-    console.log('[audio] transport started', {
-      position: Tone.getTransport().position,
-      loopEnd: Tone.getTransport().loopEnd,
-    })
+    isPlayingRef.current = true
     setIsPlaying(true)
     setTransportStatus('Playing')
-  }, [configureTransport, initAudio, isPlaying, assignments, mutedSlots, scheduleSlotPlayer])
+  }, [])
 
   const handleStopReset = useCallback(() => {
-    Tone.getTransport().stop()
-    activePlayersRef.current.forEach((engine) => {
-      engine.player.stop()
-      engine.player.unsync()
-      engine.player.mute = false
+    clearAllAssignedDebugIntervals()
+    assignedAudioRef.current.forEach((audio) => {
+      audio.pause()
+      audio.muted = false
+      audio.currentTime = 0
     })
-    activePlayersRef.current.clear()
+    assignedAudioRef.current.clear()
+    isPlayingRef.current = false
     setIsPlaying(false)
     setTransportStatus('Stopped')
     setSlots(Array(SLOT_COUNT).fill(null))
+    mutedSlotsRef.current = new Set()
     setMutedSlots(new Set())
     setSelectedPadId(null)
-  }, [])
+  }, [clearAllAssignedDebugIntervals])
 
-  useEffect(() => {
-    syncLoops(isPlaying)
-  }, [mutedSlots, isPlaying, syncLoops])
+  const handleTestNativeAudioLoop = useCallback(async () => {
+    clearDiagnosticNativeTest()
+    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'])
+    if (!beatOneUrl) return
+
+    const audio = new Audio(beatOneUrl)
+    setDiagnosticNativeUrl(audio.src)
+    audio.loop = true
+    audio.preload = 'auto'
+    audio.volume = normalizedVolume(volume)
+    audio.onended = () => {
+      console.log('[diagnostic] native ended fired', {
+        currentTime: audio.currentTime,
+        loop: audio.loop,
+      })
+    }
+    audio.onerror = () => {
+      console.error('[diagnostic] native error', audio.error)
+    }
+    audio.onloadedmetadata = () => {
+      console.log('[diagnostic] native metadata', {
+        url: audio.src,
+        duration: audio.duration,
+        loop: audio.loop,
+        paused: audio.paused,
+      })
+    }
+    audio.oncanplaythrough = () => {
+      console.log('[diagnostic] native canplaythrough', {
+        url: audio.src,
+        duration: audio.duration,
+        currentTime: audio.currentTime,
+        loop: audio.loop,
+        paused: audio.paused,
+      })
+    }
+
+    diagnosticNativeAudioRef.current = audio
+    await audio.play().catch((error) => {
+      console.warn('[diagnostic] native play failed', error)
+    })
+    console.log('[diagnostic] native started', {
+      url: audio.src,
+      duration: audio.duration,
+      currentTime: audio.currentTime,
+      loop: audio.loop,
+      paused: audio.paused,
+    })
+    diagnosticNativeIntervalRef.current = window.setInterval(() => {
+      console.log('[diagnostic] native currentTime', {
+        url: audio.src,
+        currentTime: audio.currentTime,
+        duration: audio.duration,
+        loop: audio.loop,
+        paused: audio.paused,
+      })
+    }, 1000)
+  }, [clearDiagnosticNativeTest, volume])
+
+  const handleStopNativeAudioTest = useCallback(() => {
+    clearDiagnosticNativeTest()
+    console.log('[diagnostic] native stopped')
+  }, [clearDiagnosticNativeTest])
+
+  const handleTestTonePlayerLoop = useCallback(async () => {
+    clearDiagnosticToneTest()
+    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'])
+    if (!beatOneUrl) return
+
+    await Tone.start()
+    const context = Tone.getContext()
+    await context.resume()
+    console.log('[diagnostic] Tone context state', context.state)
+
+    const player = new Tone.Player({
+      url: beatOneUrl,
+      loop: true,
+      autostart: false,
+      fadeIn: 0,
+      fadeOut: 0,
+    }).toDestination()
+    player.volume.value = volumeDb(volume)
+    diagnosticTonePlayerRef.current = player
+
+    await Tone.loaded()
+    player.start()
+    diagnosticToneStartedAtRef.current = Tone.now()
+    console.log('[diagnostic] Tone player started', {
+      duration: player.buffer.duration,
+      loop: player.loop,
+      contextState: Tone.getContext().state,
+    })
+    diagnosticToneIntervalRef.current = window.setInterval(() => {
+      const startedAt = diagnosticToneStartedAtRef.current
+      const duration = player.buffer.duration || 0
+      const estimatedCurrentTime =
+        startedAt !== null && duration > 0 ? (Tone.now() - startedAt) % duration : 0
+      console.log('[diagnostic] Tone player currentTime', {
+        currentTime: estimatedCurrentTime,
+        duration,
+        loop: player.loop,
+        state: player.state,
+        contextState: Tone.getContext().state,
+      })
+    }, 2000)
+  }, [clearDiagnosticToneTest, volume])
+
+  const handleStopToneTest = useCallback(() => {
+    clearDiagnosticToneTest()
+    console.log('[diagnostic] Tone stopped')
+  }, [clearDiagnosticToneTest])
 
   const filledCount = slots.filter(Boolean).length
   const usedPadIds = useMemo(() => new Set(slots.filter(Boolean) as string[]), [slots])
+  const audioDebugUrlsMatch =
+    Boolean(diagnosticNativeUrl && assignedBeatOneUrl) &&
+    diagnosticNativeUrl === assignedBeatOneUrl
 
   return (
     <div className="incrediboy">
@@ -1049,8 +1207,9 @@ function App() {
           <button
             type="button"
             className={`control-bar__mix control-bar__mix--play ${isPlaying ? 'control-bar__mix--playing' : ''}`}
-            onClick={handlePlayPause}
-            disabled={filledCount === 0 && !isPlaying}
+            disabled
+            hidden
+            aria-hidden="true"
             aria-label={isPlaying ? 'Pause loop' : 'Play loop'}
           >
             <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
@@ -1105,6 +1264,15 @@ function App() {
             aria-label="Stop and reset"
           >
             RESET
+          </button>
+          <button
+            type="button"
+            className={`control-bar__loops ${isPlaying ? 'control-bar__loops--playing' : ''}`}
+            onClick={playAssignedAudioNow}
+            disabled={filledCount === 0}
+            aria-label="Play loops"
+          >
+            PLAY LOOPS
           </button>
         </div>
       </motion.div>
@@ -1161,6 +1329,29 @@ function App() {
           </motion.div>
         </div>
       </DndContext>
+
+      <aside className="audio-diagnostic-panel" aria-label="Temporary audio diagnostics">
+        <strong>Audio diagnostics</strong>
+        <button type="button" onClick={handleTestNativeAudioLoop}>
+          Test Native Audio Loop
+        </button>
+        <button type="button" onClick={handleStopNativeAudioTest}>
+          Stop Native Audio Test
+        </button>
+        <button type="button" onClick={handleTestTonePlayerLoop}>
+          Test Tone Player Loop
+        </button>
+        <button type="button" onClick={handleStopToneTest}>
+          Stop Tone Test
+        </button>
+      </aside>
+
+      <aside className="audio-debug-url-box" aria-label="Audio URL comparison">
+        <strong>Audio URL debug</strong>
+        <span>Diagnostic URL: {diagnosticNativeUrl || 'not tested yet'}</span>
+        <span>Assigned beat-1 URL: {assignedBeatOneUrl || 'not assigned yet'}</span>
+        <span>Same file URL: {audioDebugUrlsMatch ? 'yes' : 'not confirmed'}</span>
+      </aside>
     </div>
   )
 }
