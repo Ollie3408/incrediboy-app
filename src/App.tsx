@@ -67,6 +67,7 @@ const SLOT_COUNT = 7
 /** Slots 0–4 = cat characters; slots 5–6 = human beatbox style */
 const SLOT_IS_CAT = [true, true, true, true, true, false, false] as const
 const DEFAULT_BPM = 100
+const MASTER_LOOP_MS = 9600
 
 const CATEGORY_META: Record<
   SoundCategory,
@@ -700,6 +701,7 @@ function App() {
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
 
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
+  const masterCycleIntervalRef = useRef<number | null>(null)
   const isPlayingRef = useRef(false)
   const mutedSlotsRef = useRef<Set<number>>(new Set())
   const volumeRef = useRef(volume)
@@ -742,6 +744,12 @@ function App() {
   const clearAllAssignedDebugIntervals = useCallback(() => {
     assignedDebugIntervalsRef.current.forEach((interval) => window.clearInterval(interval))
     assignedDebugIntervalsRef.current.clear()
+  }, [])
+
+  const clearMasterCycle = useCallback(() => {
+    if (masterCycleIntervalRef.current === null) return
+    window.clearInterval(masterCycleIntervalRef.current)
+    masterCycleIntervalRef.current = null
   }, [])
 
   const clearDiagnosticNativeTest = useCallback(() => {
@@ -804,43 +812,50 @@ function App() {
 
   useEffect(() => {
     return () => {
+      clearMasterCycle()
       clearAllAssignedDebugIntervals()
     }
-  }, [clearAllAssignedDebugIntervals])
+  }, [clearAllAssignedDebugIntervals, clearMasterCycle])
 
-  const playAssignedAudio = useCallback(async (slotIndex: number) => {
-    const audio = assignedAudioRef.current.get(slotIndex)
-    if (!audio) return
-    audio.currentTime = 0
-    audio.loop = true
-    audio.volume = normalizedVolume(volumeRef.current)
-    audio.muted = mutedSlotsRef.current.has(slotIndex)
-    try {
-      await audio.play()
-      console.log('[assigned] play resolved', slotIndex)
-    } catch (error) {
-      console.warn('[assigned] play failed', { slot: slotIndex, url: audio.src, error })
-    }
-    console.log('[assigned] playing', {
-      slot: slotIndex,
-      url: audio.src,
-      duration: audio.duration,
-      loop: audio.loop,
-      paused: audio.paused,
+  const restartAssignedAudioCycle = useCallback(() => {
+    console.log('[assigned] master cycle restart')
+    assignedAudioRef.current.forEach((audio, slot) => {
+      if (mutedSlotsRef.current.has(slot)) {
+        audio.pause()
+        return
+      }
+
+      audio.loop = true
+      audio.currentTime = 0
+      audio.volume = normalizedVolume(volumeRef.current)
+      void audio.play()
+        .then(() => console.log('[assigned] cycle play resolved', slot))
+        .catch((error) => console.warn('[assigned] cycle play failed', { slot, url: audio.src, error }))
+
+      if (!assignedDebugIntervalsRef.current.has(slot)) {
+        const interval = window.setInterval(() => {
+          console.log('[assigned] currentTime', {
+            slot,
+            currentTime: audio.currentTime,
+            duration: audio.duration,
+            paused: audio.paused,
+            loop: audio.loop,
+          })
+        }, 1000)
+        assignedDebugIntervalsRef.current.set(slot, interval)
+      }
     })
-    if (!assignedDebugIntervalsRef.current.has(slotIndex)) {
-      const interval = window.setInterval(() => {
-        console.log('[assigned] currentTime', {
-          slot: slotIndex,
-          currentTime: audio.currentTime,
-          duration: audio.duration,
-          paused: audio.paused,
-          loop: audio.loop,
-        })
-      }, 1000)
-      assignedDebugIntervalsRef.current.set(slotIndex, interval)
-    }
   }, [])
+
+  const startMasterCycle = useCallback(() => {
+    clearMasterCycle()
+    restartAssignedAudioCycle()
+    masterCycleIntervalRef.current = window.setInterval(restartAssignedAudioCycle, MASTER_LOOP_MS)
+    isPlayingRef.current = true
+    setIsPlaying(true)
+    setTransportStatus('Playing')
+    console.log('[assigned] master cycle started', { loopMs: MASTER_LOOP_MS })
+  }, [clearMasterCycle, restartAssignedAudioCycle])
 
   const disposeAssignedAudio = useCallback((slotIndex: number) => {
     const audio = assignedAudioRef.current.get(slotIndex)
@@ -876,11 +891,12 @@ function App() {
       loop: audio.loop,
     })
 
-    await playAssignedAudio(slotIndex)
-    isPlayingRef.current = true
-    setIsPlaying(true)
-    setTransportStatus('Playing')
-  }, [disposeAssignedAudio, playAssignedAudio])
+    if (!isPlayingRef.current) {
+      startMasterCycle()
+    } else {
+      console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
+    }
+  }, [disposeAssignedAudio, startMasterCycle])
 
   const assignPadToSlot = useCallback(async (padId: string, slotIndex: number) => {
     const pad = PAD_BY_ID[padId]
@@ -927,15 +943,15 @@ function App() {
           const audio = assignedAudioRef.current.get(index)
           if (audio) {
             audio.muted = !muted
-            if (muted && isPlayingRef.current) void playAssignedAudio(index)
-            else audio.pause()
+            if (!muted) audio.pause()
+            else console.log('[assigned] unmuted; waiting for next master cycle', { slot: index })
           }
           return next
         })
         return
       }
     },
-    [slots, playAssignedAudio],
+    [slots],
   )
 
   const handleDragEnd = useCallback(
@@ -960,6 +976,7 @@ function App() {
     disposeAssignedAudio(index)
     const hasRemainingAssigned = slots.some((slot, i) => i !== index && slot)
     if (isPlaying && !hasRemainingAssigned) {
+      clearMasterCycle()
       isPlayingRef.current = false
       setIsPlaying(false)
       setTransportStatus('Stopped')
@@ -975,58 +992,31 @@ function App() {
       mutedSlotsRef.current = next
       return next
     })
-  }, [disposeAssignedAudio, isPlaying, slots])
+  }, [clearMasterCycle, disposeAssignedAudio, isPlaying, slots])
 
   const playAssignedAudioNow = useCallback(async () => {
     console.log('[PLAY LOOPS] clicked')
-    console.log('[PLAY LOOPS] calling working function')
+    console.log('[PLAY LOOPS] starting master cycle')
     if (assignedAudioRef.current.size === 0) {
       setTransportStatus('Stopped')
       return
     }
 
-    for (const [slot, audio] of assignedAudioRef.current) {
-      audio.loop = true
-      audio.currentTime = 0
-      console.log('[play button] playing slot', slot)
-      try {
-        await audio.play()
-        console.log('[assigned] play resolved', slot)
-      } catch (error) {
-        console.warn('[assigned] play failed', { slot, url: audio.src, error })
-      }
+    startMasterCycle()
+  }, [startMasterCycle])
 
-      console.log('[assigned] playing', {
-        slot,
-        url: audio.src,
-        duration: audio.duration,
-        loop: audio.loop,
-        paused: audio.paused,
-      })
-
-      if (!assignedDebugIntervalsRef.current.has(slot)) {
-        const interval = window.setInterval(() => {
-          console.log('[assigned] currentTime', {
-            slot,
-            currentTime: audio.currentTime,
-            duration: audio.duration,
-            paused: audio.paused,
-            loop: audio.loop,
-          })
-        }, 1000)
-
-        assignedDebugIntervalsRef.current.set(slot, interval)
-      }
-    }
-    console.log('[audio] native assigned playback started', {
-      activeSlots: assignedAudioRef.current.size,
+  const pauseAssignedAudioNow = useCallback(() => {
+    clearMasterCycle()
+    assignedAudioRef.current.forEach((audio) => {
+      audio.pause()
     })
-    isPlayingRef.current = true
-    setIsPlaying(true)
-    setTransportStatus('Playing')
-  }, [])
+    isPlayingRef.current = false
+    setIsPlaying(false)
+    setTransportStatus('Paused')
+  }, [clearMasterCycle])
 
   const handleStopReset = useCallback(() => {
+    clearMasterCycle()
     clearAllAssignedDebugIntervals()
     assignedAudioRef.current.forEach((audio) => {
       audio.pause()
@@ -1041,7 +1031,7 @@ function App() {
     mutedSlotsRef.current = new Set()
     setMutedSlots(new Set())
     setSelectedPadId(null)
-  }, [clearAllAssignedDebugIntervals])
+  }, [clearAllAssignedDebugIntervals, clearMasterCycle])
 
   const handleTestNativeAudioLoop = useCallback(async () => {
     clearDiagnosticNativeTest()
@@ -1268,11 +1258,11 @@ function App() {
           <button
             type="button"
             className={`control-bar__loops ${isPlaying ? 'control-bar__loops--playing' : ''}`}
-            onClick={playAssignedAudioNow}
+            onClick={isPlaying ? pauseAssignedAudioNow : playAssignedAudioNow}
             disabled={filledCount === 0}
-            aria-label="Play loops"
+            aria-label={isPlaying ? 'Pause loops' : 'Play loops'}
           >
-            PLAY LOOPS
+            {isPlaying ? 'PAUSE LOOPS' : 'PLAY LOOPS'}
           </button>
         </div>
       </motion.div>
