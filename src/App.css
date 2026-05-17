@@ -247,6 +247,18 @@
   padding: 0 0.3rem;
 }
 
+.control-bar__pack-select {
+  height: 28px;
+  max-width: 150px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.58rem;
+  font-weight: 800;
+  padding: 0 0.45rem;
+}
+
 .control-bar__reset {
   min-width: 72px;
   height: 34px;

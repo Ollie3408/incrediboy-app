@@ -8,6 +8,7 @@ import {
 } from '@dnd-kit/core'
 import { motion } from 'framer-motion'
 import * as Tone from 'tone'
+import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import './App.css'
 
@@ -184,6 +185,11 @@ const bundledTrancePackAudioUrls = import.meta.glob<string>(
   { query: '?url', import: 'default', eager: true },
 )
 
+const bundledBeatsBoxPackAudioUrls = import.meta.glob<string>(
+  './assets/audio/generated/beats-box-pack-1/*.wav',
+  { query: '?url', import: 'default', eager: true },
+)
+
 function bundledFileName(path: string): string {
   return path.split('/').pop() ?? path
 }
@@ -270,56 +276,94 @@ function audioAssetFile(pad: PadDefinition): string {
   return `${pad.category}-${pad.variant + 1}.wav`
 }
 
-type TrancePackCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice'
-type TrancePackPad = (typeof trancePack1.pads)[number]
-
-const TRANCE_CATEGORY_FALLBACKS: Record<SoundCategory, TrancePackCategory[]> = {
-  beat: ['beat', 'bass', 'melody', 'fx'],
-  melody: ['melody', 'bass', 'fx'],
-  effect: ['fx', 'melody', 'bass'],
-  percussion: ['beat', 'bass', 'fx', 'melody'],
-  voice: ['voice', 'melody', 'fx'],
+type ActivePackId = 'trance-pack-1' | 'beats-box-pack-1'
+type PackAudioCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice' | 'percussion'
+type PackPadAudio = {
+  category: PackAudioCategory
+  audioFile: string
+}
+type RuntimeAudioPack = {
+  id: ActivePackId
+  name: string
+  pads: PackPadAudio[]
+  audioUrls: Record<string, string>
 }
 
-const trancePadsByCategory = trancePack1.pads.reduce(
-  (groups, pad) => {
-    groups[pad.category].push(pad)
-    return groups
+const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
+  'trance-pack-1': {
+    id: trancePack1.id,
+    name: trancePack1.name,
+    pads: trancePack1.pads.map((pad) => ({
+      category: pad.category,
+      audioFile: pad.audioFile,
+    })),
+    audioUrls: bundledTrancePackAudioUrls,
   },
-  {
-    beat: [],
-    bass: [],
-    melody: [],
-    fx: [],
-    voice: [],
-  } as Record<TrancePackCategory, TrancePackPad[]>,
-)
+  'beats-box-pack-1': {
+    id: beatsBoxPack1.id,
+    name: beatsBoxPack1.name,
+    pads: beatsBoxPack1.pads.map((pad) => ({
+      category: pad.category,
+      audioFile: pad.filename,
+    })),
+    audioUrls: bundledBeatsBoxPackAudioUrls,
+  },
+}
 
-function lookupTrancePackAudio(filename: string): string | undefined {
+const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
+  beat: ['beat', 'bass', 'melody', 'fx'],
+  melody: ['melody', 'bass', 'fx', 'beat'],
+  effect: ['fx', 'melody', 'bass', 'beat'],
+  percussion: ['percussion', 'beat', 'bass', 'fx', 'melody'],
+  voice: ['voice', 'melody', 'fx', 'beat'],
+}
+
+function groupPackPads(pack: RuntimeAudioPack): Record<PackAudioCategory, PackPadAudio[]> {
+  return pack.pads.reduce(
+    (groups, pad) => {
+      groups[pad.category].push(pad)
+      return groups
+    },
+    {
+      beat: [],
+      bass: [],
+      melody: [],
+      fx: [],
+      voice: [],
+      percussion: [],
+    } as Record<PackAudioCategory, PackPadAudio[]>,
+  )
+}
+
+function lookupPackAudio(pack: RuntimeAudioPack, filename: string): string | undefined {
   const lower = filename.toLowerCase()
-  return Object.entries(bundledTrancePackAudioUrls).find(([key]) =>
+  return Object.entries(pack.audioUrls).find(([key]) =>
     key.toLowerCase().endsWith(`/${lower}`),
   )?.[1]
 }
 
-function trancePackPadForGamePad(pad: PadDefinition): TrancePackPad | undefined {
-  for (const category of TRANCE_CATEGORY_FALLBACKS[pad.category]) {
-    const candidates = trancePadsByCategory[category]
+function packPadForGamePad(pad: PadDefinition, pack: RuntimeAudioPack): PackPadAudio | undefined {
+  const padsByCategory = groupPackPads(pack)
+  for (const category of PACK_CATEGORY_FALLBACKS[pad.category]) {
+    const candidates = padsByCategory[category]
     if (candidates.length > 0) return candidates[pad.variant % candidates.length]
   }
-  return trancePack1.pads[pad.variant % trancePack1.pads.length]
+  return pack.pads[pad.variant % pack.pads.length]
 }
 
-function resolveTrancePackAudioSrc(pad: PadDefinition): string | undefined {
-  const packPad = trancePackPadForGamePad(pad)
-  return packPad ? lookupTrancePackAudio(packPad.audioFile) : undefined
+function resolvePackAudioSrc(pad: PadDefinition, packId: ActivePackId): string | undefined {
+  const pack = AUDIO_PACKS[packId]
+  const packPad = packPadForGamePad(pad, pack)
+  return packPad ? lookupPackAudio(pack, packPad.audioFile) : undefined
 }
 
-const ACTIVE_PACK_PAD_COUNT = ALL_PADS.filter((pad) => resolveTrancePackAudioSrc(pad)).length
+function packPadCount(packId: ActivePackId): number {
+  return ALL_PADS.filter((pad) => resolvePackAudioSrc(pad, packId)).length
+}
 
-function resolveAudioSrc(pad: PadDefinition): string | undefined {
-  const trancePackAudio = resolveTrancePackAudioSrc(pad)
-  if (trancePackAudio) return trancePackAudio
+function resolveAudioSrc(pad: PadDefinition, packId: ActivePackId = 'trance-pack-1'): string | undefined {
+  const packAudio = resolvePackAudioSrc(pad, packId)
+  if (packAudio) return packAudio
 
   const file = audioAssetFile(pad)
   return lookupBundledAsset(bundledAudioUrls, 'audio', file)
@@ -337,8 +381,9 @@ function createTonePlayer(
   pad: PadDefinition,
   volume: number,
   loop: boolean,
+  packId: ActivePackId = 'trance-pack-1',
 ): Tone.Player | null {
-  const url = resolveAudioSrc(pad)
+  const url = resolveAudioSrc(pad, packId)
   if (!url) return null
 
   const player = new Tone.Player({
@@ -755,6 +800,7 @@ function App() {
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
+  const [activePackId, setActivePackId] = useState<ActivePackId>('trance-pack-1')
 
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
   const masterCycleIntervalRef = useRef<number | null>(null)
@@ -840,16 +886,17 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const activePack = AUDIO_PACKS[activePackId]
     console.log('[audio pack] active', {
-      id: trancePack1.id,
-      name: trancePack1.name,
-      padsLoaded: ACTIVE_PACK_PAD_COUNT,
-      generatedPads: trancePack1.pads.length,
-      generatedAudioFiles: Object.keys(bundledTrancePackAudioUrls).length,
+      id: activePack.id,
+      name: activePack.name,
+      padsLoaded: packPadCount(activePackId),
+      generatedPads: activePack.pads.length,
+      generatedAudioFiles: Object.keys(activePack.audioUrls).length,
     })
 
     ALL_PADS.forEach((pad) => {
-      const previewPlayer = createTonePlayer(pad, volume, false)
+      const previewPlayer = createTonePlayer(pad, volume, false, activePackId)
       if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
     })
 
@@ -865,7 +912,7 @@ function App() {
       clearDiagnosticNativeTest()
       clearDiagnosticToneTest()
     }
-  }, [clearDiagnosticNativeTest, clearDiagnosticToneTest])
+  }, [activePackId, clearDiagnosticNativeTest, clearDiagnosticToneTest, volume])
 
   useEffect(() => {
     const db = volumeDb(volume)
@@ -933,7 +980,7 @@ function App() {
 
   const createAssignedAudio = useCallback(async (pad: PadDefinition, slotIndex: number) => {
     disposeAssignedAudio(slotIndex)
-    const url = resolveAudioSrc(pad)
+    const url = resolveAudioSrc(pad, activePackId)
     if (!url) return
 
     const audio = new Audio(url)
@@ -960,7 +1007,7 @@ function App() {
     } else {
       console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
     }
-  }, [disposeAssignedAudio, startMasterCycle])
+  }, [activePackId, disposeAssignedAudio, startMasterCycle])
 
   const assignPadToSlot = useCallback(async (padId: string, slotIndex: number) => {
     const pad = PAD_BY_ID[padId]
@@ -1097,9 +1144,19 @@ function App() {
     setSelectedPadId(null)
   }, [clearAllAssignedDebugIntervals, clearMasterCycle])
 
+  const handlePackChange = useCallback(
+    (packId: ActivePackId) => {
+      handleStopReset()
+      setActivePackId(packId)
+      setDiagnosticNativeUrl('')
+      setAssignedBeatOneUrl('')
+    },
+    [handleStopReset],
+  )
+
   const handleTestNativeAudioLoop = useCallback(async () => {
     clearDiagnosticNativeTest()
-    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'])
+    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'], activePackId)
     if (!beatOneUrl) return
 
     const audio = new Audio(beatOneUrl)
@@ -1154,7 +1211,7 @@ function App() {
         paused: audio.paused,
       })
     }, 1000)
-  }, [clearDiagnosticNativeTest, volume])
+  }, [activePackId, clearDiagnosticNativeTest, volume])
 
   const handleStopNativeAudioTest = useCallback(() => {
     clearDiagnosticNativeTest()
@@ -1163,7 +1220,7 @@ function App() {
 
   const handleTestTonePlayerLoop = useCallback(async () => {
     clearDiagnosticToneTest()
-    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'])
+    const beatOneUrl = resolveAudioSrc(PAD_BY_ID['beat-0'], activePackId)
     if (!beatOneUrl) return
 
     await Tone.start()
@@ -1202,7 +1259,7 @@ function App() {
         contextState: Tone.getContext().state,
       })
     }, 2000)
-  }, [clearDiagnosticToneTest, volume])
+  }, [activePackId, clearDiagnosticToneTest, volume])
 
   const handleStopToneTest = useCallback(() => {
     clearDiagnosticToneTest()
@@ -1289,6 +1346,21 @@ function App() {
           </span>
         </div>
         <div className="control-bar__transport">
+          <label className="control-bar__field">
+            <span>PACK</span>
+            <select
+              className="control-bar__pack-select"
+              value={activePackId}
+              onChange={(e) => handlePackChange(e.target.value as ActivePackId)}
+              aria-label="Audio pack"
+            >
+              {Object.values(AUDIO_PACKS).map((pack) => (
+                <option key={pack.id} value={pack.id}>
+                  {pack.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="control-bar__field">
             <span>VOL</span>
             <input
