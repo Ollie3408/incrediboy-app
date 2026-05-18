@@ -8,7 +8,9 @@ import {
 } from '@dnd-kit/core'
 import { motion } from 'framer-motion'
 import * as Tone from 'tone'
+import { beatsBoxCuratedPack1 } from './generated/audioPacks/beatsBoxCuratedPack1'
 import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
+import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import './App.css'
 
@@ -276,11 +278,17 @@ function audioAssetFile(pad: PadDefinition): string {
   return `${pad.category}-${pad.variant + 1}.wav`
 }
 
-type ActivePackId = 'trance-pack-1' | 'beats-box-pack-1'
+type ActivePackId =
+  | 'trance-pack-1'
+  | 'trance-curated-pack-1'
+  | 'beats-box-pack-1'
+  | 'beats-box-curated-pack-1'
 type PackAudioCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice' | 'percussion'
 type PackPadAudio = {
+  id: string
   category: PackAudioCategory
   audioFile: string
+  sourceFile: string
 }
 type RuntimeAudioPack = {
   id: ActivePackId
@@ -294,8 +302,21 @@ const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
     id: trancePack1.id,
     name: trancePack1.name,
     pads: trancePack1.pads.map((pad) => ({
+      id: pad.id,
       category: pad.category,
       audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
+    })),
+    audioUrls: bundledTrancePackAudioUrls,
+  },
+  'trance-curated-pack-1': {
+    id: tranceCuratedPack1.id,
+    name: tranceCuratedPack1.name,
+    pads: tranceCuratedPack1.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category,
+      audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
     })),
     audioUrls: bundledTrancePackAudioUrls,
   },
@@ -303,8 +324,21 @@ const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
     id: beatsBoxPack1.id,
     name: beatsBoxPack1.name,
     pads: beatsBoxPack1.pads.map((pad) => ({
+      id: pad.id,
       category: pad.category,
       audioFile: pad.filename,
+      sourceFile: pad.originalFilename,
+    })),
+    audioUrls: bundledBeatsBoxPackAudioUrls,
+  },
+  'beats-box-curated-pack-1': {
+    id: beatsBoxCuratedPack1.id,
+    name: beatsBoxCuratedPack1.name,
+    pads: beatsBoxCuratedPack1.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category,
+      audioFile: pad.filename,
+      sourceFile: pad.originalFilename,
     })),
     audioUrls: bundledBeatsBoxPackAudioUrls,
   },
@@ -317,6 +351,13 @@ const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
   percussion: ['percussion', 'beat', 'bass', 'fx', 'melody'],
   voice: ['voice', 'melody', 'fx', 'beat'],
 }
+
+const TRANCE_REPLACEMENT_PAD_IDS = new Set(ROW_A.slice(0, 5).map((pad) => pad.id))
+const CURATED_SLOT_PAD_IDS = new Set(ROW_A.slice(0, 7).map((pad) => pad.id))
+const CURATED_PACK_IDS = new Set<ActivePackId>([
+  'trance-curated-pack-1',
+  'beats-box-curated-pack-1',
+])
 
 function groupPackPads(pack: RuntimeAudioPack): Record<PackAudioCategory, PackPadAudio[]> {
   return pack.pads.reduce(
@@ -343,6 +384,23 @@ function lookupPackAudio(pack: RuntimeAudioPack, filename: string): string | und
 }
 
 function packPadForGamePad(pad: PadDefinition, pack: RuntimeAudioPack): PackPadAudio | undefined {
+  if (CURATED_PACK_IDS.has(pack.id) && CURATED_SLOT_PAD_IDS.has(pad.id)) {
+    const visiblePadIndex = ROW_A.findIndex((visiblePad) => visiblePad.id === pad.id)
+    const curatedPad = pack.pads[visiblePadIndex]
+    if (curatedPad) return curatedPad
+    return undefined
+  }
+
+  if (CURATED_PACK_IDS.has(pack.id)) {
+    return undefined
+  }
+
+  if (pack.id === 'trance-pack-1' && TRANCE_REPLACEMENT_PAD_IDS.has(pad.id)) {
+    const visiblePadIndex = ROW_A.findIndex((visiblePad) => visiblePad.id === pad.id)
+    const replacementPad = pack.pads[visiblePadIndex]
+    if (replacementPad) return replacementPad
+  }
+
   const padsByCategory = groupPackPads(pack)
   for (const category of PACK_CATEGORY_FALLBACKS[pad.category]) {
     const candidates = padsByCategory[category]
@@ -354,7 +412,16 @@ function packPadForGamePad(pad: PadDefinition, pack: RuntimeAudioPack): PackPadA
 function resolvePackAudioSrc(pad: PadDefinition, packId: ActivePackId): string | undefined {
   const pack = AUDIO_PACKS[packId]
   const packPad = packPadForGamePad(pad, pack)
-  return packPad ? lookupPackAudio(pack, packPad.audioFile) : undefined
+  const audioUrl = packPad ? lookupPackAudio(pack, packPad.audioFile) : undefined
+
+  if (packId === 'trance-pack-1' && packPad && TRANCE_REPLACEMENT_PAD_IDS.has(pad.id)) {
+    console.log('[trance replacement] pad id', pad.id)
+    console.log('[trance replacement] category', packPad.category)
+    console.log('[trance replacement] audio url', audioUrl)
+    console.log('[trance replacement] source file', packPad.sourceFile)
+  }
+
+  return audioUrl
 }
 
 function packPadCount(packId: ActivePackId): number {
@@ -407,29 +474,11 @@ const CHAR_FALLBACK_VIEW = '0 0 100 240'
 
 function CharacterFallbackEmpty({
   muted,
-  isCat,
+  isCat: _isCat,
 }: {
   muted: boolean
   isCat: boolean
 }) {
-  if (isCat) {
-    return (
-      <svg
-        className="character-figure character-figure--empty character-figure--fallback character-figure--cat"
-        viewBox={CHAR_FALLBACK_VIEW}
-        aria-hidden="true"
-        style={{ opacity: muted ? 0.4 : 1 }}
-      >
-        <ellipse cx="50" cy="70" rx="28" ry="30" fill="#c4c4c4" stroke="#111" strokeWidth="3" />
-        <polygon points="50,38 32,52 68,52" fill="#c4c4c4" stroke="#111" strokeWidth="2" />
-        <circle cx="40" cy="66" r="4" fill="#111" />
-        <circle cx="60" cy="66" r="4" fill="#111" />
-        <path d="M44 76 Q50 80 56 76" fill="none" stroke="#555" strokeWidth="2" />
-        <path d="M48 52 L52 44 L56 52" fill="none" stroke="#111" strokeWidth="2" />
-        <path d="M28 100 Q50 92 72 100 L70 178 Q50 184 30 178 Z" fill="#b0b0b0" stroke="#111" strokeWidth="3" />
-      </svg>
-    )
-  }
   return (
     <svg
       className="character-figure character-figure--empty character-figure--fallback"
@@ -437,17 +486,32 @@ function CharacterFallbackEmpty({
       aria-hidden="true"
       style={{ opacity: muted ? 0.4 : 1 }}
     >
-      <path
-        d="M24 50 Q50 24 76 46 L72 66 Q50 48 28 64 Z"
-        fill="#141414"
-        stroke="#111"
-        strokeWidth="3"
-      />
-      <ellipse cx="50" cy="64" rx="24" ry="28" fill="#efefef" stroke="#111" strokeWidth="3" />
-      <circle cx="41" cy="62" r="3" fill="#111" />
-      <circle cx="59" cy="62" r="3" fill="#111" />
-      <line x1="43" y1="78" x2="57" y2="78" stroke="#555" strokeWidth="2.5" />
-      <path d="M26 92 Q50 84 74 92 L72 178 Q50 184 28 178 Z" fill="#b5b5b5" stroke="#111" strokeWidth="3" />
+      <ellipse cx="50" cy="226" rx="36" ry="5" fill="rgba(0,0,0,0.22)" />
+      <path d="M32 92 L68 92 L73 164 Q50 174 27 164 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M36 99 Q50 105 64 99" fill="none" stroke="#9a9a98" strokeWidth="2" strokeLinecap="round" />
+      <path d="M29 103 C20 122 20 145 24 164" fill="none" stroke="#050505" strokeWidth="7" strokeLinecap="round" />
+      <path d="M71 103 C80 122 80 145 76 164" fill="none" stroke="#050505" strokeWidth="7" strokeLinecap="round" />
+      <path d="M27 164 L24 215 H41 L47 168 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M73 164 L76 215 H59 L53 168 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M22 216 H43 Q45 226 33 227 H18 Q16 221 22 216 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M57 216 H78 Q84 221 82 227 H67 Q55 226 57 216 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M27 50 C27 30 39 19 56 20 C72 21 81 32 79 52 C78 76 68 94 50 96 C32 94 24 76 27 50 Z" fill="#d8d8d5" stroke="#050505" strokeWidth="4.5" strokeLinejoin="round" />
+      <path d="M21 56 C21 32 39 18 60 21 C77 23 85 37 81 56 C75 43 65 37 52 36 C43 48 34 54 21 56 Z" fill="#050505" stroke="#050505" strokeWidth="3.5" strokeLinejoin="round" />
+      <path d="M24 51 C19 59 21 72 28 79" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
+      <path d="M77 51 C84 60 81 74 73 80" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
+      <path d="M31 36 C25 42 22 48 21 56" fill="none" stroke="#050505" strokeWidth="5" strokeLinecap="round" />
+      <path d="M76 38 C82 45 82 52 79 61" fill="none" stroke="#050505" strokeWidth="5" strokeLinecap="round" />
+      <path d="M34 66 Q42 61 51 66" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
+      <path d="M55 66 Q64 61 72 66" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
+      <path d="M34 70 H51" stroke="#050505" strokeWidth="2.8" strokeLinecap="round" />
+      <path d="M55 70 H72" stroke="#050505" strokeWidth="2.8" strokeLinecap="round" />
+      <path d="M36 72 Q42 76 49 72" fill="none" stroke="#050505" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M57 72 Q64 76 71 72" fill="none" stroke="#050505" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx="42" cy="73" r="2.9" fill="#050505" />
+      <circle cx="64" cy="73" r="2.9" fill="#050505" />
+      <path d="M51 75 L47 92 H57" fill="none" stroke="#050505" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M38 102 Q50 107 62 102" fill="none" stroke="#050505" strokeWidth="3.8" strokeLinecap="round" />
+      <path d="M37 91 H64" fill="none" stroke="#777" strokeWidth="2.3" strokeLinecap="round" opacity="0.82" />
     </svg>
   )
 }
@@ -796,6 +860,7 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [transportStatus, setTransportStatus] = useState<TransportStatus>('Stopped')
   const [audioReady, setAudioReady] = useState(false)
+  const [masterMuted, setMasterMuted] = useState(false)
   const [volume, setVolume] = useState(80)
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
@@ -805,6 +870,7 @@ function App() {
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
   const masterCycleIntervalRef = useRef<number | null>(null)
   const isPlayingRef = useRef(false)
+  const masterMutedRef = useRef(false)
   const mutedSlotsRef = useRef<Set<number>>(new Set())
   const volumeRef = useRef(volume)
   const diagnosticNativeAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -827,6 +893,10 @@ function App() {
   useEffect(() => {
     isPlayingRef.current = isPlaying
   }, [isPlaying])
+
+  useEffect(() => {
+    masterMutedRef.current = masterMuted
+  }, [masterMuted])
 
   useEffect(() => {
     mutedSlotsRef.current = mutedSlots
@@ -895,6 +965,13 @@ function App() {
       generatedAudioFiles: Object.keys(activePack.audioUrls).length,
     })
 
+    if (CURATED_PACK_IDS.has(activePackId)) {
+      console.log('[curated pack] active', {
+        packId: activePack.id,
+        files: activePack.pads.map((pad) => pad.audioFile),
+      })
+    }
+
     ALL_PADS.forEach((pad) => {
       const previewPlayer = createTonePlayer(pad, volume, false, activePackId)
       if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
@@ -919,6 +996,13 @@ function App() {
     Object.values(previewRef.current.players).forEach((player) => {
       if (player) player.volume.value = db
     })
+    const normalized = normalizedVolume(volume)
+    assignedAudioRef.current.forEach((audio, slot) => {
+      audio.volume = isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)
+        ? normalized
+        : 0
+    })
+    console.log('[volume] updated', { value: volume, normalized })
   }, [volume])
 
   useEffect(() => {
@@ -938,7 +1022,7 @@ function App() {
 
       audio.loop = true
       audio.currentTime = 0
-      audio.volume = normalizedVolume(volumeRef.current)
+      audio.volume = isPlayingRef.current && !masterMutedRef.current ? normalizedVolume(volumeRef.current) : 0
       void audio.play()
         .then(() => console.log('[assigned] cycle play resolved', slot))
         .catch((error) => console.warn('[assigned] cycle play failed', { slot, url: audio.src, error }))
@@ -958,14 +1042,14 @@ function App() {
     })
   }, [])
 
-  const startMasterCycle = useCallback(() => {
+  const startOrRestartLoops = useCallback(() => {
     clearMasterCycle()
-    restartAssignedAudioCycle()
-    masterCycleIntervalRef.current = window.setInterval(restartAssignedAudioCycle, MASTER_LOOP_MS)
     isPlayingRef.current = true
     setIsPlaying(true)
-    setTransportStatus('Playing')
-    console.log('[assigned] master cycle started', { loopMs: MASTER_LOOP_MS })
+    setTransportStatus(masterMutedRef.current ? 'Paused' : 'Playing')
+    restartAssignedAudioCycle()
+    masterCycleIntervalRef.current = window.setInterval(restartAssignedAudioCycle, MASTER_LOOP_MS)
+    console.log('[master] start/restart loops', { loopMs: MASTER_LOOP_MS })
   }, [clearMasterCycle, restartAssignedAudioCycle])
 
   const disposeAssignedAudio = useCallback((slotIndex: number) => {
@@ -986,7 +1070,7 @@ function App() {
     const audio = new Audio(url)
     audio.loop = true
     audio.preload = 'auto'
-    audio.volume = normalizedVolume(volumeRef.current)
+    audio.volume = masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
     audio.onpause = () => console.log('[assigned] paused', slotIndex)
     audio.onended = () => console.log('[assigned] ended', slotIndex)
     audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
@@ -1002,12 +1086,12 @@ function App() {
       loop: audio.loop,
     })
 
-    if (!isPlayingRef.current) {
-      startMasterCycle()
+    if (masterCycleIntervalRef.current === null) {
+      startOrRestartLoops()
     } else {
       console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
     }
-  }, [activePackId, disposeAssignedAudio, startMasterCycle])
+  }, [activePackId, disposeAssignedAudio, startOrRestartLoops])
 
   const assignPadToSlot = useCallback(async (padId: string, slotIndex: number) => {
     const pad = PAD_BY_ID[padId]
@@ -1054,8 +1138,8 @@ function App() {
           const audio = assignedAudioRef.current.get(index)
           if (audio) {
             audio.muted = !muted
-            if (!muted) audio.pause()
-            else console.log('[assigned] unmuted; waiting for next master cycle', { slot: index })
+            audio.volume = next.has(index) || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
+            if (muted) console.log('[assigned] unmuted', { slot: index })
           }
           return next
         })
@@ -1086,7 +1170,7 @@ function App() {
   const removeFromSlot = useCallback((index: number) => {
     disposeAssignedAudio(index)
     const hasRemainingAssigned = slots.some((slot, i) => i !== index && slot)
-    if (isPlaying && !hasRemainingAssigned) {
+    if (!hasRemainingAssigned) {
       clearMasterCycle()
       isPlayingRef.current = false
       setIsPlaying(false)
@@ -1103,28 +1187,32 @@ function App() {
       mutedSlotsRef.current = next
       return next
     })
-  }, [clearMasterCycle, disposeAssignedAudio, isPlaying, slots])
+  }, [clearMasterCycle, disposeAssignedAudio, slots])
 
   const playAssignedAudioNow = useCallback(async () => {
     console.log('[PLAY LOOPS] clicked')
-    console.log('[PLAY LOOPS] starting master cycle')
     if (assignedAudioRef.current.size === 0) {
       setTransportStatus('Stopped')
       return
     }
 
-    startMasterCycle()
-  }, [startMasterCycle])
+    startOrRestartLoops()
+  }, [startOrRestartLoops])
 
-  const pauseAssignedAudioNow = useCallback(() => {
-    clearMasterCycle()
-    assignedAudioRef.current.forEach((audio) => {
-      audio.pause()
+  const toggleMasterMute = useCallback(() => {
+    const nextMuted = !masterMutedRef.current
+    masterMutedRef.current = nextMuted
+    setMasterMuted(nextMuted)
+    const restoredVolume = normalizedVolume(volumeRef.current)
+    assignedAudioRef.current.forEach((audio, slot) => {
+      audio.volume = nextMuted || mutedSlotsRef.current.has(slot) ? 0 : restoredVolume
     })
-    isPlayingRef.current = false
-    setIsPlaying(false)
-    setTransportStatus('Paused')
-  }, [clearMasterCycle])
+    setTransportStatus(nextMuted ? 'Paused' : (isPlayingRef.current ? 'Playing' : 'Stopped'))
+    console.log(nextMuted ? '[pause] global mute' : '[pause] global unmute', {
+      muted: nextMuted,
+      restoredVolume,
+    })
+  }, [])
 
   const handleStopReset = useCallback(() => {
     clearMasterCycle()
@@ -1135,6 +1223,8 @@ function App() {
       audio.currentTime = 0
     })
     assignedAudioRef.current.clear()
+    masterMutedRef.current = false
+    setMasterMuted(false)
     isPlayingRef.current = false
     setIsPlaying(false)
     setTransportStatus('Stopped')
@@ -1393,12 +1483,21 @@ function App() {
           </button>
           <button
             type="button"
-            className={`control-bar__loops ${isPlaying ? 'control-bar__loops--playing' : ''}`}
-            onClick={isPlaying ? pauseAssignedAudioNow : playAssignedAudioNow}
-            disabled={filledCount === 0}
-            aria-label={isPlaying ? 'Pause loops' : 'Play loops'}
+            className={`control-bar__loops ${masterMuted ? 'control-bar__loops--playing' : ''}`}
+            onClick={toggleMasterMute}
+            disabled={filledCount === 0 || !isPlaying}
+            aria-label={masterMuted ? 'Unpause audio' : 'Pause audio'}
           >
-            {isPlaying ? 'PAUSE LOOPS' : 'PLAY LOOPS'}
+            {masterMuted ? 'UNPAUSE AUDIO' : 'PAUSE AUDIO'}
+          </button>
+          <button
+            type="button"
+            className={`control-bar__loops ${isPlaying ? 'control-bar__loops--playing' : ''}`}
+            onClick={playAssignedAudioNow}
+            disabled={filledCount === 0}
+            aria-label={isPlaying ? 'Restart loops' : 'Play loops'}
+          >
+            {isPlaying ? 'RESTART LOOPS' : 'PLAY LOOPS'}
           </button>
         </div>
       </motion.div>
