@@ -561,12 +561,18 @@
   pointer-events: none;
 }
 
-.character-slot-wrap--filled:not(.character-slot-wrap--playing) .character-slot__body {
-  animation: character-idle 3.2s ease-in-out infinite;
+.character-slot-wrap--performing {
+  --perform-delay: calc(var(--slot-index, 0) * 42ms);
 }
 
-.character-slot-wrap--playing .character-slot__body {
-  animation: character-groove 0.68s ease-in-out infinite;
+.character-slot-wrap--filled:not(.character-slot-wrap--performing):not(.character-slot-wrap--muted)
+  .character-slot__body {
+  animation: character-idle 3.6s ease-in-out infinite;
+}
+
+.character-slot-wrap--empty .character-slot__body,
+.character-slot-wrap--muted .character-slot__body {
+  animation: none;
 }
 
 .character-slot__remove {
@@ -609,8 +615,15 @@
   max-height: 100%;
   min-height: 0;
   transform-origin: bottom center;
-  transition: filter 0.2s ease, opacity 0.2s ease;
+  transition:
+    transform 0.22s ease,
+    filter 0.28s ease,
+    opacity 0.28s ease;
   user-select: none;
+}
+
+.character-slot-wrap--empty .character-figure {
+  animation: none;
 }
 
 .character-figure--fallback {
@@ -639,8 +652,70 @@
 }
 
 .character-slot-wrap--muted .character-figure--assigned {
-  opacity: 0.4;
-  filter: grayscale(0.4) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+  opacity: 0.38;
+  filter: grayscale(0.45) brightness(0.78) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+  animation: none !important;
+}
+
+.character-slot-wrap--muted .character-slot__body {
+  filter: brightness(0.82);
+}
+
+/* ── Category performer motion (synced to 9.6s master loop via --beat-period / --bar-period) ── */
+
+.character-slot-wrap--performing .character-figure--assigned {
+  will-change: transform;
+}
+
+.character-slot-wrap--perform-beat.character-slot-wrap--performing .character-figure--assigned {
+  animation: perform-beat var(--beat-period, 600ms) cubic-bezier(0.34, 1.1, 0.48, 1) infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-bass.character-slot-wrap--performing .character-figure--assigned {
+  animation: perform-bass var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-melody.character-slot-wrap--performing .character-figure--assigned {
+  animation: perform-melody var(--half-loop, 4800ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-voice.character-slot-wrap--performing .character-figure--assigned {
+  animation: perform-voice var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-fx.character-slot-wrap--performing .character-figure--assigned {
+  animation: perform-fx-body var(--beat-period, 600ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-fx.character-slot-wrap--performing::before {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 12%;
+  height: 72%;
+  z-index: 0;
+  border-radius: 42% 42% 18% 18%;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    ellipse at 50% 72%,
+    rgba(0, 255, 220, 0.42) 0%,
+    rgba(208, 36, 255, 0.2) 38%,
+    transparent 72%
+  );
+  animation: perform-fx-glow var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--perform-fx.character-slot-wrap--performing .character-slot__body {
+  position: relative;
+  z-index: 1;
 }
 
 @keyframes character-idle {
@@ -650,18 +725,110 @@
   }
 
   50% {
-    transform: translateY(-5px) scale(1.01);
+    transform: translateY(-4px) scale(1.008);
   }
 }
 
-@keyframes character-groove {
+@keyframes perform-beat {
   0%,
   100% {
-    transform: translateY(0) scale(1);
+    transform: translateY(0) scale(1, 1) rotate(0deg);
+  }
+
+  18% {
+    transform: translateY(-16px) scale(1.03, 0.94) rotate(-1deg);
+  }
+
+  32% {
+    transform: translateY(-6px) scale(1.02, 0.98) rotate(0.5deg);
+  }
+
+  48% {
+    transform: translateY(-12px) scale(1.025, 0.96) rotate(-0.6deg);
+  }
+}
+
+@keyframes perform-bass {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+
+  45% {
+    transform: translateY(-8px) scale(1.06, 1.03);
+  }
+
+  70% {
+    transform: translateY(-3px) scale(1.02, 1.01);
+  }
+}
+
+@keyframes perform-melody {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+
+  25% {
+    transform: translateX(-7px) rotate(-2.8deg);
+  }
+
+  75% {
+    transform: translateX(7px) rotate(2.8deg);
+  }
+}
+
+@keyframes perform-voice {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+
+  22% {
+    transform: translateY(-3px) scale(1.02, 1.04);
+  }
+
+  38% {
+    transform: translateY(-1px) scale(1.01, 0.98);
+  }
+
+  58% {
+    transform: translateY(-4px) scale(1.015, 1.03);
+  }
+}
+
+@keyframes perform-fx-body {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 14px 20px rgba(0, 0, 0, 0.52)) brightness(1);
   }
 
   50% {
-    transform: translateY(-3px) scale(1.025);
+    transform: scale(1.04);
+    filter: drop-shadow(0 10px 28px rgba(0, 255, 214, 0.35)) brightness(1.12);
+  }
+}
+
+@keyframes perform-fx-glow {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(0.96);
+  }
+
+  50% {
+    opacity: 0.72;
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-slot-wrap--performing .character-figure--assigned,
+  .character-slot-wrap--filled:not(.character-slot-wrap--performing):not(.character-slot-wrap--muted)
+    .character-slot__body,
+  .character-slot-wrap--perform-fx.character-slot-wrap--performing::before {
+    animation: none !important;
   }
 }
 
@@ -802,6 +969,36 @@
   .character-figure {
     max-height: min(52vh, 380px);
     min-height: 120px;
+  }
+
+  @keyframes perform-beat {
+    0%,
+    100% {
+      transform: translateY(0) scale(1, 1);
+    }
+
+    18% {
+      transform: translateY(-10px) scale(1.02, 0.96);
+    }
+
+    48% {
+      transform: translateY(-8px) scale(1.02, 0.97);
+    }
+  }
+
+  @keyframes perform-melody {
+    0%,
+    100% {
+      transform: translateX(0) rotate(0deg);
+    }
+
+    25% {
+      transform: translateX(-4px) rotate(-1.8deg);
+    }
+
+    75% {
+      transform: translateX(4px) rotate(1.8deg);
+    }
   }
 
   .top-nav__links {

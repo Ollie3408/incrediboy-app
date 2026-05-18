@@ -72,6 +72,12 @@ const SLOT_COUNT = 7
 const SLOT_IS_CAT = [true, true, true, true, true, false, false] as const
 const DEFAULT_BPM = 100
 const MASTER_LOOP_MS = 9600
+/** One quarter-note visual period at 100 BPM within the 9.6s master loop. */
+const MASTER_BEAT_MS = MASTER_LOOP_MS / 16
+/** One bar (4 beats) visual period. */
+const MASTER_BAR_MS = MASTER_LOOP_MS / 4
+
+type PerformanceCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice'
 
 const CATEGORY_META: Record<
   SoundCategory,
@@ -428,6 +434,25 @@ function packPadCount(packId: ActivePackId): number {
   return ALL_PADS.filter((pad) => resolvePackAudioSrc(pad, packId)).length
 }
 
+/** Visual performer style from the loop actually played (pack category), not just pad tile colour. */
+function resolvePerformanceCategory(
+  pad: PadDefinition,
+  packId: ActivePackId,
+): PerformanceCategory {
+  const packPad = packPadForGamePad(pad, AUDIO_PACKS[packId])
+  if (packPad) {
+    if (packPad.category === 'bass') return 'bass'
+    if (packPad.category === 'fx') return 'fx'
+    if (packPad.category === 'voice') return 'voice'
+    if (packPad.category === 'melody') return 'melody'
+    return 'beat'
+  }
+  if (pad.category === 'effect') return 'fx'
+  if (pad.category === 'voice') return 'voice'
+  if (pad.category === 'melody') return 'melody'
+  return 'beat'
+}
+
 function resolveAudioSrc(pad: PadDefinition, packId: ActivePackId = 'trance-pack-1'): string | undefined {
   const packAudio = resolvePackAudioSrc(pad, packId)
   if (packAudio) return packAudio
@@ -782,6 +807,8 @@ function CharacterSlot({
   assignment,
   muted,
   isPlaying,
+  masterMuted,
+  activePackId,
   onSlotClick,
   onRemove,
 }: {
@@ -789,28 +816,32 @@ function CharacterSlot({
   assignment: SlotAssignment
   muted: boolean
   isPlaying: boolean
+  masterMuted: boolean
+  activePackId: ActivePackId
   onSlotClick: (index: number) => void
   onRemove: (index: number) => void
 }) {
   const slotId = `slot-${index}`
   const { setNodeRef, isOver } = useDroppable({ id: slotId })
+  const performance = assignment
+    ? resolvePerformanceCategory(assignment, activePackId)
+    : null
+  const isPerforming = Boolean(assignment && isPlaying && !muted && !masterMuted)
 
   return (
     <motion.div
       ref={setNodeRef}
-      className={`character-slot-wrap ${isOver ? 'character-slot-wrap--over' : ''} ${
-        assignment ? 'character-slot-wrap--filled' : 'character-slot-wrap--empty'
-      } ${isPlaying && assignment && !muted ? 'character-slot-wrap--playing' : ''} ${
-        muted ? 'character-slot-wrap--muted' : ''
-      }`}
-      animate={
-        isPlaying && assignment && !muted
-          ? {
-              y: [0, -7, 0],
-              transition: { repeat: Infinity, duration: 0.34, ease: 'easeInOut' },
-            }
-          : { y: 0 }
-      }
+      className={[
+        'character-slot-wrap',
+        isOver ? 'character-slot-wrap--over' : '',
+        assignment ? 'character-slot-wrap--filled' : 'character-slot-wrap--empty',
+        isPerforming ? 'character-slot-wrap--performing' : '',
+        performance ? `character-slot-wrap--perform-${performance}` : '',
+        muted ? 'character-slot-wrap--muted' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      style={{ ['--slot-index' as string]: String(index) }}
     >
       <button
         type="button"
@@ -1509,7 +1540,17 @@ function App() {
       <DndContext onDragEnd={handleDragEnd}>
         <div className="game-shell">
           <main className="stage" aria-label="Characters">
-            <div className="character-slots">
+            <motion.div
+              className="character-slots"
+              style={
+                {
+                  '--loop-duration': `${MASTER_LOOP_MS}ms`,
+                  '--beat-period': `${MASTER_BEAT_MS}ms`,
+                  '--bar-period': `${MASTER_BAR_MS}ms`,
+                  '--half-loop': `${MASTER_LOOP_MS / 2}ms`,
+                } as CSSProperties
+              }
+            >
               {assignments.map((assignment, index) => (
                 <CharacterSlot
                   key={index}
@@ -1517,11 +1558,13 @@ function App() {
                   assignment={assignment}
                   muted={mutedSlots.has(index)}
                   isPlaying={isPlaying}
+                  masterMuted={masterMuted}
+                  activePackId={activePackId}
                   onSlotClick={handleSlotClick}
                   onRemove={removeFromSlot}
                 />
               ))}
-            </div>
+            </motion.div>
           </main>
 
           <motion.div
