@@ -8,11 +8,12 @@
   --panel-h: clamp(148px, 20dvh, 176px);
   --stage-inner-h: calc(100dvh - var(--nav-h) - var(--bar-h) - var(--panel-h));
   --slot-gap: clamp(3px, 0.45vw, 8px);
-  /* Uniform visual scale inside frame (compensates PNG transparent padding) */
-  --character-visual-scale: 1.06;
-  /* Width capped by viewport so all 7 fit; height fills stage vertically */
-  --character-frame-w: clamp(120px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 200px);
-  --character-frame-h: min(clamp(280px, 44vh, 440px), var(--stage-inner-h));
+  /* No extra inner scale — cover/contain handles sizing directly */
+  --character-visual-scale: 1.0;
+  /* Width: 7 slots fill viewport; height: capped at 520px so placeholder becomes height-constrained
+     and fills the frame (placeholder AR 0.43 < frame AR at 520px, both empty & assigned fill equally) */
+  --character-frame-w: clamp(120px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 240px);
+  --character-frame-h: min(clamp(280px, 55vh, 520px), var(--stage-inner-h));
   --nav-bg: #000000;
   --bar-bg: #ffffff;
   --stage-bg: #5a616b;
@@ -1076,7 +1077,11 @@
 }
 
 .character-figure--assigned {
-  mix-blend-mode: screen;
+  /* Cover fills the full frame height; since cat_music images are ~square (0.97:1) and the
+     frame is portrait, cover crops ~50% of each side to show the centred face/torso at full height.
+     This gives ~2× the previous appear height and matches the placeholder's visual presence. */
+  object-fit: cover;
+  object-position: center bottom;
   filter:
     drop-shadow(0 14px 20px rgba(0, 0, 0, 0.52))
     drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4));
@@ -1426,8 +1431,8 @@
 @media (max-height: 820px) {
   .incrediboy {
     --panel-h: clamp(136px, 18dvh, 160px);
-    --character-visual-scale: 1.08;
-    --character-frame-h: min(clamp(272px, 42vh, 420px), var(--stage-inner-h));
+    --character-visual-scale: 1.0;
+    --character-frame-h: min(clamp(240px, 48vh, 420px), var(--stage-inner-h));
     --character-frame-w: clamp(112px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 188px);
     --bar-h: 48px;
   }
@@ -1446,8 +1451,8 @@
   .incrediboy {
     --panel-h: clamp(128px, 19dvh, 152px);
     --slot-gap: clamp(3px, 0.45vw, 8px);
-    --character-visual-scale: 1.05;
-    --character-frame-h: min(clamp(228px, 38vh, 350px), var(--stage-inner-h));
+    --character-visual-scale: 1.0;
+    --character-frame-h: min(clamp(210px, 42vh, 350px), var(--stage-inner-h));
     --character-frame-w: clamp(100px, calc((100vw - 20px - 6 * var(--slot-gap)) / 7), 168px);
   }
 

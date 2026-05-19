@@ -190,11 +190,6 @@ const NAV_LINKS = ['App', 'Demo', 'Mods', 'Albums', 'Shop'] as const
 // ASSET PATHS — artwork lives in src/assets/* (bundled) or public/* (runtime)
 // =============================================================================
 
-const bundledCharacterUrls = import.meta.glob<string>(
-  './assets/characters/*.{png,jpg,jpeg,webp,svg}',
-  { query: '?url', import: 'default', eager: true },
-)
-
 const bundledPadUrls = import.meta.glob<string>(
   './assets/pads/*.{png,jpg,jpeg,webp,svg}',
   { query: '?url', import: 'default', eager: true },
@@ -215,51 +210,6 @@ const bundledBeatsBoxPackAudioUrls = import.meta.glob<string>(
   { query: '?url', import: 'default', eager: true },
 )
 
-function bundledFileName(path: string): string {
-  return path.split('/').pop() ?? path
-}
-
-const bundledCharacterFiles = Object.keys(bundledCharacterUrls).map(bundledFileName)
-const bundledAssignedCharacterFiles = bundledCharacterFiles.filter(
-  (file) => !/^empty-/i.test(file),
-)
-
-function numberedCharacterFiles(category: SoundCategory): string[] {
-  const pattern = new RegExp(`^${category}-(\\d+)\\.(png|jpe?g|webp|svg)$`, 'i')
-  return bundledCharacterFiles
-    .map((file) => {
-      const match = file.match(pattern)
-      return match ? { file, number: Number(match[1]) } : null
-    })
-    .filter((entry): entry is { file: string; number: number } => entry !== null)
-    .sort((a, b) => a.number - b.number)
-    .map((entry) => entry.file)
-}
-
-function uniqueFiles(files: (string | undefined)[]): string[] {
-  return [...new Set(files.filter((file): file is string => Boolean(file)))]
-}
-
-/** Image file candidates for a slot. Empty slots always use the blank default. */
-function characterAssetFiles(pad: PadDefinition | null, slotIndex: number): string[] {
-  if (!pad) {
-    return SLOT_IS_CAT[slotIndex] ? ['empty-cat.png'] : ['empty-character.png']
-  }
-
-  const exact = `${pad.category}-${pad.variant + 1}.png`
-  const availableByIndex = numberedCharacterFiles(pad.category)[pad.variant]
-  const categoryFallbacks = numberedCharacterFiles(pad.category)
-  const sharedFallback =
-    bundledAssignedCharacterFiles[pad.variant % bundledAssignedCharacterFiles.length]
-
-  return uniqueFiles([
-    exact,
-    availableByIndex,
-    ...categoryFallbacks,
-    sharedFallback,
-  ])
-}
-
 /** File name for a pad tile icon (matches character naming) */
 function padAssetFile(pad: PadDefinition): string {
   return `${pad.category}-${pad.variant + 1}.png`
@@ -278,18 +228,23 @@ function lookupBundledAsset(
   )?.[1]
 }
 
-/** Resolved URL: bundled src/assets first, then public/characters */
-function resolveCharacterSrc(
-  pad: PadDefinition | null,
-  slotIndex: number,
-): string {
-  const files = characterAssetFiles(pad, slotIndex)
-  for (const file of files) {
-    const bundled = lookupBundledAsset(bundledCharacterUrls, 'characters', file)
-    if (bundled) return bundled
-  }
+/**
+ * One cat_music PNG per pad, ordered by ALL_PADS index (01 = pad 0 … 24 = pad 23).
+ * Files live in public/characters/ and are served as static assets.
+ */
+const PAD_CHARACTER_URLS: readonly string[] = Array.from(
+  { length: 24 },
+  (_, i) => `/characters/cat_music_${String(i + 1).padStart(2, '0')}.png`,
+)
 
-  return `/characters/${files[0]}`
+/** Resolved character image URL for a slot.
+ *  - Empty slot  → placeholder-cyber.png
+ *  - Assigned    → cat_music_XX.png matching the pad's index in ALL_PADS
+ */
+function resolveCharacterSrc(pad: PadDefinition | null, _slotIndex: number): string {
+  if (!pad) return '/characters/placeholder-cyber.png'
+  const padIndex = ALL_PADS.findIndex((p) => p.id === pad.id)
+  return padIndex >= 0 ? PAD_CHARACTER_URLS[padIndex] : '/characters/placeholder-cyber.png'
 }
 
 function resolvePadSrc(pad: PadDefinition): string {
