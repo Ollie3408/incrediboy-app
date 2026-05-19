@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { CSSProperties } from 'react'
 import {
   DndContext,
@@ -12,6 +20,15 @@ import { beatsBoxCuratedPack1 } from './generated/audioPacks/beatsBoxCuratedPack
 import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
 import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
+import {
+  buildShareUrl,
+  clearShareMixFromUrl,
+  hasShareMixInUrl,
+  readMixFromLocation,
+  type MixPackId,
+  type SavedMix,
+} from './mixShare'
+import { IntroScreen } from './IntroScreen'
 import './App.css'
 
 // =============================================================================
@@ -224,8 +241,10 @@ function uniqueFiles(files: (string | undefined)[]): string[] {
 }
 
 /** Image file candidates for a slot. Empty slots always use the blank default. */
-function characterAssetFiles(pad: PadDefinition | null): string[] {
-  if (!pad) return ['empty-character.png', 'empty-cat.png']
+function characterAssetFiles(pad: PadDefinition | null, slotIndex: number): string[] {
+  if (!pad) {
+    return SLOT_IS_CAT[slotIndex] ? ['empty-cat.png'] : ['empty-character.png']
+  }
 
   const exact = `${pad.category}-${pad.variant + 1}.png`
   const availableByIndex = numberedCharacterFiles(pad.category)[pad.variant]
@@ -262,9 +281,9 @@ function lookupBundledAsset(
 /** Resolved URL: bundled src/assets first, then public/characters */
 function resolveCharacterSrc(
   pad: PadDefinition | null,
-  _slotIndex: number,
+  slotIndex: number,
 ): string {
-  const files = characterAssetFiles(pad)
+  const files = characterAssetFiles(pad, slotIndex)
   for (const file of files) {
     const bundled = lookupBundledAsset(bundledCharacterUrls, 'characters', file)
     if (bundled) return bundled
@@ -364,6 +383,18 @@ const CURATED_PACK_IDS = new Set<ActivePackId>([
   'trance-curated-pack-1',
   'beats-box-curated-pack-1',
 ])
+
+/** Ordered list of pack entries shown in the UI dropdown. */
+const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
+  {
+    group: 'Curated Packs',
+    packs: ['trance-curated-pack-1', 'beats-box-curated-pack-1'],
+  },
+  {
+    group: 'Advanced — Raw Packs',
+    packs: ['trance-pack-1', 'beats-box-pack-1'],
+  },
+]
 
 function groupPackPads(pack: RuntimeAudioPack): Record<PackAudioCategory, PackPadAudio[]> {
   return pack.pads.reduce(
@@ -497,49 +528,61 @@ function createTonePlayer(
 
 const CHAR_FALLBACK_VIEW = '0 0 100 240'
 
-function CharacterFallbackEmpty({
-  muted,
-  isCat: _isCat,
-}: {
-  muted: boolean
-  isCat: boolean
-}) {
+/** Shared outer frame + inner visual scale (normalizes PNG transparent padding). */
+function CharacterFigureFrame({ children }: { children: ReactNode }) {
   return (
-    <svg
-      className="character-figure character-figure--empty character-figure--fallback"
-      viewBox={CHAR_FALLBACK_VIEW}
-      aria-hidden="true"
-      style={{ opacity: muted ? 0.4 : 1 }}
-    >
-      <ellipse cx="50" cy="226" rx="36" ry="5" fill="rgba(0,0,0,0.22)" />
-      <path d="M32 92 L68 92 L73 164 Q50 174 27 164 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
-      <path d="M36 99 Q50 105 64 99" fill="none" stroke="#9a9a98" strokeWidth="2" strokeLinecap="round" />
-      <path d="M29 103 C20 122 20 145 24 164" fill="none" stroke="#050505" strokeWidth="7" strokeLinecap="round" />
-      <path d="M71 103 C80 122 80 145 76 164" fill="none" stroke="#050505" strokeWidth="7" strokeLinecap="round" />
-      <path d="M27 164 L24 215 H41 L47 168 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
-      <path d="M73 164 L76 215 H59 L53 168 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
-      <path d="M22 216 H43 Q45 226 33 227 H18 Q16 221 22 216 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
-      <path d="M57 216 H78 Q84 221 82 227 H67 Q55 226 57 216 Z" fill="#d6d6d3" stroke="#050505" strokeWidth="4" strokeLinejoin="round" />
-      <path d="M27 50 C27 30 39 19 56 20 C72 21 81 32 79 52 C78 76 68 94 50 96 C32 94 24 76 27 50 Z" fill="#d8d8d5" stroke="#050505" strokeWidth="4.5" strokeLinejoin="round" />
-      <path d="M21 56 C21 32 39 18 60 21 C77 23 85 37 81 56 C75 43 65 37 52 36 C43 48 34 54 21 56 Z" fill="#050505" stroke="#050505" strokeWidth="3.5" strokeLinejoin="round" />
-      <path d="M24 51 C19 59 21 72 28 79" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
-      <path d="M77 51 C84 60 81 74 73 80" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
-      <path d="M31 36 C25 42 22 48 21 56" fill="none" stroke="#050505" strokeWidth="5" strokeLinecap="round" />
-      <path d="M76 38 C82 45 82 52 79 61" fill="none" stroke="#050505" strokeWidth="5" strokeLinecap="round" />
-      <path d="M34 66 Q42 61 51 66" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
-      <path d="M55 66 Q64 61 72 66" fill="none" stroke="#050505" strokeWidth="4" strokeLinecap="round" />
-      <path d="M34 70 H51" stroke="#050505" strokeWidth="2.8" strokeLinecap="round" />
-      <path d="M55 70 H72" stroke="#050505" strokeWidth="2.8" strokeLinecap="round" />
-      <path d="M36 72 Q42 76 49 72" fill="none" stroke="#050505" strokeWidth="2.5" strokeLinecap="round" />
-      <path d="M57 72 Q64 76 71 72" fill="none" stroke="#050505" strokeWidth="2.5" strokeLinecap="round" />
-      <circle cx="42" cy="73" r="2.9" fill="#050505" />
-      <circle cx="64" cy="73" r="2.9" fill="#050505" />
-      <path d="M51 75 L47 92 H57" fill="none" stroke="#050505" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M38 102 Q50 107 62 102" fill="none" stroke="#050505" strokeWidth="3.8" strokeLinecap="round" />
-      <path d="M37 91 H64" fill="none" stroke="#777" strokeWidth="2.3" strokeLinecap="round" opacity="0.82" />
-    </svg>
+    <div className="character-figure-frame">
+      <motion.div className="character-figure-inner">{children}</motion.div>
+    </div>
   )
 }
+
+function assignedAudioHasSrc(audio: HTMLAudioElement): boolean {
+  const src = audio.currentSrc || audio.src
+  if (!src) return false
+  return /\.(wav|mp3|ogg|m4a|aac|flac)(\?|#|$)/i.test(src) || src.startsWith('blob:')
+}
+
+function waitForAssignedAudioReady(audio: HTMLAudioElement): Promise<void> {
+  if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const onReady = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = () => {
+      cleanup()
+      reject(new Error('assigned audio failed to load'))
+    }
+    const cleanup = () => {
+      audio.removeEventListener('canplaythrough', onReady)
+      audio.removeEventListener('error', onError)
+    }
+    audio.addEventListener('canplaythrough', onReady, { once: true })
+    audio.addEventListener('error', onError, { once: true })
+    audio.load()
+  })
+}
+
+/** Fully stop and detach one assigned loop element. */
+function stopAssignedAudioElement(audio: HTMLAudioElement): void {
+  audio.pause()
+  audio.loop = false
+  audio.muted = false
+  audio.volume = 0
+  audio.currentTime = 0
+  if (assignedAudioHasSrc(audio)) {
+    audio.removeAttribute('src')
+    try {
+      audio.load()
+    } catch {
+      // load() can throw if the element is already torn down
+    }
+  }
+}
+
 
 function CharacterFallbackAssigned({
   pad,
@@ -552,9 +595,10 @@ function CharacterFallbackAssigned({
 }) {
   if (isCat) {
     return (
-      <svg
-        className="character-figure character-figure--assigned character-figure--fallback character-figure--cat"
-        viewBox={CHAR_FALLBACK_VIEW}
+      <CharacterFigureFrame>
+        <svg
+          className="character-figure character-figure--assigned character-figure--fallback character-figure--cat"
+          viewBox={CHAR_FALLBACK_VIEW}
         aria-hidden="true"
         style={{ opacity: muted ? 0.42 : 1 }}
       >
@@ -564,24 +608,47 @@ function CharacterFallbackAssigned({
         <circle cx="62" cy="64" r="5" fill="#111" />
         <ellipse cx="50" cy="76" rx="6" ry="4" fill="#3d2018" />
         <path d="M26 100 Q50 90 74 100 L72 176 Q50 182 28 176 Z" fill={pad.color} stroke="#111" strokeWidth="2.5" />
-      </svg>
+        </svg>
+      </CharacterFigureFrame>
     )
   }
   return (
-    <svg
-      className="character-figure character-figure--assigned character-figure--fallback"
-      viewBox={CHAR_FALLBACK_VIEW}
-      aria-hidden="true"
-      style={{ opacity: muted ? 0.42 : 1 }}
-    >
-      <ellipse cx="50" cy="64" rx="24" ry="28" fill="#f7f2ea" stroke="#111" strokeWidth="2" />
-      <path
-        d="M26 92 Q50 86 74 92 L72 172 Q50 178 28 172 Z"
-        fill={pad.color}
-        stroke="#111"
-        strokeWidth="2"
+    <CharacterFigureFrame>
+      <svg
+        className="character-figure character-figure--assigned character-figure--fallback"
+        viewBox={CHAR_FALLBACK_VIEW}
+        aria-hidden="true"
+        style={{ opacity: muted ? 0.42 : 1 }}
+      >
+        <ellipse cx="50" cy="64" rx="24" ry="28" fill="#f7f2ea" stroke="#111" strokeWidth="2" />
+        <path
+          d="M26 92 Q50 86 74 92 L72 172 Q50 178 28 172 Z"
+          fill={pad.color}
+          stroke="#111"
+          strokeWidth="2"
+        />
+      </svg>
+    </CharacterFigureFrame>
+  )
+}
+
+function CharacterFigureEmpty({
+  slotIndex: _slotIndex,
+  muted,
+}: {
+  slotIndex: number
+  muted: boolean
+}) {
+  return (
+    <CharacterFigureFrame>
+      <img
+        src="/characters/placeholder-cyber.png"
+        alt="Empty performer"
+        className="character-figure character-figure--empty"
+        style={{ opacity: muted ? 0.38 : 1 }}
+        draggable={false}
       />
-    </svg>
+    </CharacterFigureFrame>
   )
 }
 
@@ -604,7 +671,7 @@ function CharacterFigure({
   }, [pad?.id, slotIndex])
 
   if (!pad) {
-    return <CharacterFallbackEmpty muted={muted} isCat={isCat} />
+    return <CharacterFigureEmpty slotIndex={slotIndex} muted={muted} />
   }
 
   if (useFallback) {
@@ -612,18 +679,20 @@ function CharacterFigure({
   }
 
   return (
-    <motion.img
-      key={pad?.id ?? 'empty'}
-      src={src}
-      alt={pad ? `${pad.label} character` : 'Empty character'}
-      className={`character-figure ${pad ? 'character-figure--assigned' : 'character-figure--empty'}`}
-      style={{ opacity: muted ? 0.42 : 1 }}
-      initial={pad ? { scale: 0.92, opacity: 0 } : false}
-      animate={{ scale: 1, opacity: muted ? 0.42 : 1 }}
-      transition={{ type: 'spring', stiffness: 380, damping: 26 }}
-      onError={() => setUseFallback(true)}
-      draggable={false}
-    />
+    <CharacterFigureFrame>
+      <motion.img
+        key={pad?.id ?? 'empty'}
+        src={src}
+        alt={pad ? `${pad.label} character` : 'Empty character'}
+        className="character-figure character-figure--assigned"
+        style={{ opacity: muted ? 0.42 : 1 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: muted ? 0.42 : 1 }}
+        transition={{ duration: 0.22, ease: 'easeOut' }}
+        onError={() => setUseFallback(true)}
+        draggable={false}
+      />
+    </CharacterFigureFrame>
   )
 }
 
@@ -882,10 +951,58 @@ function CharacterSlot({
 // MAIN APP — state, audio, handlers
 // =============================================================================
 
+function sanitizeMixSlots(mix: SavedMix): SavedMix {
+  return {
+    ...mix,
+    s: mix.s.map((padId) => (padId && PAD_BY_ID[padId] ? padId : null)),
+  }
+}
+
+function transportFromMix(mix: SavedMix | null): TransportStatus {
+  if (!mix?.play) return 'Stopped'
+  return mix.pause ? 'Paused' : 'Playing'
+}
+
+type BootResolution = { mode: 'clean' } | { mode: 'share'; mix: SavedMix }
+
+function resolveAppBoot(): BootResolution {
+  const url = window.location.href
+  const hash = window.location.hash
+  const validMix = hasShareMixInUrl()
+  console.log('[boot-debug] url', url)
+  console.log('[boot-debug] has valid mix', validMix)
+
+  if (!validMix) {
+    clearShareMixFromUrl()
+    console.log('[boot] clean load no mix')
+    const emptySlots = Array(SLOT_COUNT).fill(null) as (string | null)[]
+    console.log('[boot-debug] initial slots', emptySlots)
+    return { mode: 'clean' }
+  }
+
+  const mix = readMixFromLocation()
+  if (!mix) {
+    console.warn('[boot] hash present but decode failed', hash)
+    clearShareMixFromUrl()
+    console.log('[boot] clean load no mix')
+    const emptySlots = Array(SLOT_COUNT).fill(null) as (string | null)[]
+    console.log('[boot-debug] initial slots', emptySlots)
+    return { mode: 'clean' }
+  }
+
+  const sanitized = sanitizeMixSlots(mix)
+  console.log('[boot] share mix found')
+  console.log('[boot] restored mix slots', sanitized.s)
+  console.log('[boot-debug] initial slots', sanitized.s)
+  return { mode: 'share', mix: sanitized }
+}
+
 function App() {
-  const [slots, setSlots] = useState<(string | null)[]>(
-    Array(SLOT_COUNT).fill(null),
-  )
+  const bootRef = useRef<BootResolution>(resolveAppBoot())
+  const isSharedMixLoad = bootRef.current.mode === 'share'
+  const shareMix = bootRef.current.mode === 'share' ? bootRef.current.mix : null
+
+  const [slots, setSlots] = useState<(string | null)[]>(() => Array(SLOT_COUNT).fill(null))
   const [mutedSlots, setMutedSlots] = useState<Set<number>>(() => new Set())
   const [selectedPadId, setSelectedPadId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -896,7 +1013,12 @@ function App() {
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
-  const [activePackId, setActivePackId] = useState<ActivePackId>('trance-pack-1')
+  const [activePackId, setActivePackId] = useState<ActivePackId>('trance-curated-pack-1')
+  const [mixToast, setMixToast] = useState<string | null>(null)
+  const [stageEntered, setStageEntered] = useState(false)
+  const [introExiting, setIntroExiting] = useState(false)
+  const [sharedMixAwaitingAudio, setSharedMixAwaitingAudio] = useState(false)
+  const sharedMixHydratedRef = useRef(false)
 
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
   const masterCycleIntervalRef = useRef<number | null>(null)
@@ -914,6 +1036,57 @@ function App() {
     players: {},
     dispose: () => undefined,
   })
+
+  const applyCleanBootState = useCallback(() => {
+    clearShareMixFromUrl()
+    if (masterCycleIntervalRef.current !== null) {
+      window.clearInterval(masterCycleIntervalRef.current)
+      masterCycleIntervalRef.current = null
+    }
+    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
+    assignedAudioRef.current.clear()
+    setSlots(Array(SLOT_COUNT).fill(null))
+    setMutedSlots(new Set())
+    mutedSlotsRef.current = new Set()
+    setIsPlaying(false)
+    isPlayingRef.current = false
+    setMasterMuted(false)
+    masterMutedRef.current = false
+    setTransportStatus('Stopped')
+    setSelectedPadId(null)
+    setSharedMixAwaitingAudio(false)
+    sharedMixHydratedRef.current = false
+  }, [])
+
+  const applyShareBootState = useCallback((mix: SavedMix) => {
+    const sanitized = sanitizeMixSlots(mix)
+    volumeRef.current = sanitized.vol
+    masterMutedRef.current = sanitized.pause
+    mutedSlotsRef.current = new Set(sanitized.m)
+    isPlayingRef.current = sanitized.play
+    setActivePackId(sanitized.p as ActivePackId)
+    setVolume(sanitized.vol)
+    setMasterMuted(sanitized.pause)
+    setMutedSlots(new Set(sanitized.m))
+    setIsPlaying(sanitized.play)
+    setTransportStatus(transportFromMix(sanitized))
+    setSlots([...sanitized.s])
+    setSharedMixAwaitingAudio(sanitized.s.some(Boolean))
+    setStageEntered(true)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (bootRef.current.mode === 'share') {
+      applyShareBootState(bootRef.current.mix)
+      console.log('[boot-debug] final slots after boot', bootRef.current.mix.s)
+      return
+    }
+
+    console.log('[boot] forcing empty slots')
+    applyCleanBootState()
+    const emptySlots = Array(SLOT_COUNT).fill(null)
+    console.log('[boot-debug] final slots after boot', emptySlots)
+  }, [applyCleanBootState, applyShareBootState])
 
   const assignments = useMemo(
     () =>
@@ -936,6 +1109,68 @@ function App() {
   useEffect(() => {
     volumeRef.current = volume
   }, [volume])
+
+  useEffect(() => {
+    if (!mixToast) return
+    const timeout = window.setTimeout(() => setMixToast(null), 2600)
+    return () => window.clearTimeout(timeout)
+  }, [mixToast])
+
+  const buildCurrentMix = useCallback((): SavedMix => {
+    return {
+      v: 1,
+      p: activePackId as MixPackId,
+      s: [...slots],
+      m: [...mutedSlots].sort((a, b) => a - b),
+      vol: volume,
+      pause: masterMuted,
+      play: isPlaying,
+    }
+  }, [activePackId, isPlaying, masterMuted, mutedSlots, slots, volume])
+
+  const handleSaveMix = useCallback(() => {
+    const mix = buildCurrentMix()
+    console.log('[mix] saved', mix)
+    setMixToast('Mix saved — use COPY SHARE LINK to share')
+  }, [buildCurrentMix])
+
+  const handleEnterStage = useCallback(() => {
+    setIntroExiting(true)
+    window.setTimeout(() => {
+      if (!hasShareMixInUrl()) {
+        console.log('[boot] forcing empty slots')
+        applyCleanBootState()
+      }
+      setStageEntered(true)
+      setIntroExiting(false)
+    }, 520)
+  }, [applyCleanBootState])
+
+  const handleCopyShareLink = useCallback(async () => {
+    const mix = buildCurrentMix()
+    console.log('[mix] saved for share', mix)
+    const shareUrl = buildShareUrl(mix)
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl)
+      } else {
+        const input = document.createElement('textarea')
+        input.value = shareUrl
+        input.setAttribute('readonly', 'true')
+        input.style.position = 'fixed'
+        input.style.left = '-9999px'
+        document.body.appendChild(input)
+        input.select()
+        document.execCommand('copy')
+        document.body.removeChild(input)
+      }
+      setMixToast('Mix link copied')
+    } catch (error) {
+      console.warn('[mix] clipboard copy failed', error)
+      setMixToast('Copy failed — use SAVE MIX')
+    }
+  }, [buildCurrentMix])
 
   const clearAssignedDebugInterval = useCallback((slotIndex: number) => {
     const interval = assignedDebugIntervalsRef.current.get(slotIndex)
@@ -1046,17 +1281,25 @@ function App() {
   const restartAssignedAudioCycle = useCallback(() => {
     console.log('[assigned] master cycle restart')
     assignedAudioRef.current.forEach((audio, slot) => {
+      if (!assignedAudioHasSrc(audio)) {
+        console.warn('[audio] play skipped — no src', { slot })
+        return
+      }
+
       if (mutedSlotsRef.current.has(slot)) {
         audio.pause()
         return
       }
 
       audio.loop = true
+      audio.muted = false
       audio.currentTime = 0
       audio.volume = isPlayingRef.current && !masterMutedRef.current ? normalizedVolume(volumeRef.current) : 0
-      void audio.play()
-        .then(() => console.log('[assigned] cycle play resolved', slot))
-        .catch((error) => console.warn('[assigned] cycle play failed', { slot, url: audio.src, error }))
+      console.log('[audio] play requested', { slot, url: audio.currentSrc || audio.src })
+      void audio
+        .play()
+        .then(() => console.log('[audio] play resolved', { slot }))
+        .catch((error) => console.warn('[audio] play failed', { slot, url: audio.currentSrc || audio.src, error }))
 
       if (!assignedDebugIntervalsRef.current.has(slot)) {
         const interval = window.setInterval(() => {
@@ -1087,42 +1330,85 @@ function App() {
     const audio = assignedAudioRef.current.get(slotIndex)
     if (!audio) return
     clearAssignedDebugInterval(slotIndex)
-    audio.pause()
-    audio.currentTime = 0
     assignedAudioRef.current.delete(slotIndex)
-    console.log('[assigned] removed', { slot: slotIndex, url: audio.src })
+    stopAssignedAudioElement(audio)
+    console.log('[audio] removed slot stopped', { slot: slotIndex })
+    console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
   }, [clearAssignedDebugInterval])
 
-  const createAssignedAudio = useCallback(async (pad: PadDefinition, slotIndex: number) => {
-    disposeAssignedAudio(slotIndex)
-    const url = resolveAudioSrc(pad, activePackId)
-    if (!url) return
+  const createAssignedAudio = useCallback(
+    async (
+      pad: PadDefinition,
+      slotIndex: number,
+      options?: { deferPlayback?: boolean },
+    ): Promise<boolean> => {
+      disposeAssignedAudio(slotIndex)
+      const url = resolveAudioSrc(pad, activePackId)
+      if (!url) {
+        console.warn('[audio] assigned skipped — no url', {
+          slot: slotIndex,
+          padId: pad.id,
+          packId: activePackId,
+        })
+        return false
+      }
 
-    const audio = new Audio(url)
-    audio.loop = true
-    audio.preload = 'auto'
-    audio.volume = masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
-    audio.onpause = () => console.log('[assigned] paused', slotIndex)
-    audio.onended = () => console.log('[assigned] ended', slotIndex)
-    audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
-    assignedAudioRef.current.set(slotIndex, audio)
+      const audio = new Audio(url)
+      audio.loop = true
+      audio.preload = 'auto'
+      audio.volume = 0
+      audio.onpause = () => console.log('[assigned] paused', slotIndex)
+      audio.onended = () => console.log('[assigned] ended', slotIndex)
+      audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
+      assignedAudioRef.current.set(slotIndex, audio)
 
-    if (pad.id === 'beat-0') {
-      setAssignedBeatOneUrl(audio.src)
-    }
+      try {
+        await waitForAssignedAudioReady(audio)
+      } catch (error) {
+        console.warn('[audio] assigned load failed', {
+          slot: slotIndex,
+          padId: pad.id,
+          url,
+          error,
+        })
+        assignedAudioRef.current.delete(slotIndex)
+        return false
+      }
 
-    console.log('[assigned] created', {
-      slot: slotIndex,
-      url: audio.src,
-      loop: audio.loop,
-    })
+      if (pad.id === 'beat-0') {
+        setAssignedBeatOneUrl(audio.src)
+      }
 
-    if (masterCycleIntervalRef.current === null) {
-      startOrRestartLoops()
-    } else {
-      console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
-    }
-  }, [activePackId, disposeAssignedAudio, startOrRestartLoops])
+      console.log('[audio] assigned created', {
+        slot: slotIndex,
+        padId: pad.id,
+        url: audio.src,
+      })
+
+      if (options?.deferPlayback) return true
+
+      if (masterCycleIntervalRef.current === null) {
+        startOrRestartLoops()
+      } else {
+        console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
+      }
+      return true
+    },
+    [activePackId, disposeAssignedAudio, startOrRestartLoops],
+  )
+
+  const ensureAssignedAudioForSlots = useCallback(
+    async (slotList: (string | null)[]) => {
+      for (let i = 0; i < slotList.length; i += 1) {
+        const padId = slotList[i]
+        if (!padId || assignedAudioRef.current.has(i)) continue
+        const pad = PAD_BY_ID[padId]
+        if (!pad) continue
+        await createAssignedAudio(pad, i, { deferPlayback: true })
+      }
+    },
+    [createAssignedAudio],
+  )
 
   const assignPadToSlot = useCallback(async (padId: string, slotIndex: number) => {
     const pad = PAD_BY_ID[padId]
@@ -1138,7 +1424,10 @@ function App() {
       }
     }
     next[slotIndex] = padId
-    await createAssignedAudio(pad, slotIndex)
+    const created = await createAssignedAudio(pad, slotIndex)
+    if (!created) {
+      next[slotIndex] = null
+    }
     setSlots(next)
     setMutedSlots((prev) => {
       const next = new Set(prev)
@@ -1199,8 +1488,8 @@ function App() {
   )
 
   const removeFromSlot = useCallback((index: number) => {
-    disposeAssignedAudio(index)
     const hasRemainingAssigned = slots.some((slot, i) => i !== index && slot)
+    disposeAssignedAudio(index)
     if (!hasRemainingAssigned) {
       clearMasterCycle()
       isPlayingRef.current = false
@@ -1220,15 +1509,96 @@ function App() {
     })
   }, [clearMasterCycle, disposeAssignedAudio, slots])
 
+  useEffect(() => {
+    if (!shareMix || !stageEntered || sharedMixHydratedRef.current) return
+    if (!shareMix.s.some(Boolean)) {
+      sharedMixHydratedRef.current = true
+      return
+    }
+
+    sharedMixHydratedRef.current = true
+    console.log('[mix] restored visual state')
+    console.log('[mix] waiting for user audio start')
+    setMixToast('Mix restored — press Start Shared Mix to hear it')
+    setSharedMixAwaitingAudio(true)
+
+    void (async () => {
+      for (let i = 0; i < shareMix.s.length; i += 1) {
+        const padId = shareMix.s[i]
+        if (!padId) continue
+        const pad = PAD_BY_ID[padId]
+        if (pad) await createAssignedAudio(pad, i, { deferPlayback: true })
+      }
+    })()
+  }, [createAssignedAudio, shareMix, stageEntered])
+
+  const handleStartSharedMix = useCallback(async () => {
+    setAudioReady(true)
+    try {
+      await Tone.start()
+    } catch (error) {
+      console.warn('[mix] Tone.start failed', error)
+    }
+
+    for (let i = 0; i < slots.length; i += 1) {
+      const padId = slots[i]
+      if (!padId) continue
+      const pad = PAD_BY_ID[padId]
+      if (!pad) continue
+      if (!assignedAudioRef.current.has(i)) {
+        await createAssignedAudio(pad, i, { deferPlayback: true })
+      }
+    }
+
+    const restoredVolume = normalizedVolume(volumeRef.current)
+    assignedAudioRef.current.forEach((audio, slot) => {
+      const slotMuted = mutedSlotsRef.current.has(slot)
+      audio.volume =
+        masterMutedRef.current || slotMuted ? 0 : restoredVolume
+    })
+
+    if (shareMix?.play && !shareMix.pause) {
+      startOrRestartLoops()
+    } else if (shareMix?.play && shareMix.pause) {
+      isPlayingRef.current = true
+      setIsPlaying(true)
+      setTransportStatus('Paused')
+    } else {
+      isPlayingRef.current = false
+      setIsPlaying(false)
+      setTransportStatus('Stopped')
+    }
+
+    setSharedMixAwaitingAudio(false)
+    console.log('[mix] shared audio started')
+  }, [createAssignedAudio, shareMix, slots, startOrRestartLoops])
+
   const playAssignedAudioNow = useCallback(async () => {
     console.log('[PLAY LOOPS] clicked')
+    setAudioReady(true)
+    try {
+      await Tone.start()
+    } catch (error) {
+      console.warn('[PLAY LOOPS] Tone.start failed', error)
+    }
+
+    await ensureAssignedAudioForSlots(slots)
+
     if (assignedAudioRef.current.size === 0) {
+      console.warn('[audio] play skipped — no assigned audio elements')
       setTransportStatus('Stopped')
       return
     }
 
+    assignedAudioRef.current.forEach((audio, slot) => {
+      const slotMuted = mutedSlotsRef.current.has(slot)
+      audio.volume =
+        masterMutedRef.current || slotMuted ? 0 : normalizedVolume(volumeRef.current)
+    })
+
+    setSharedMixAwaitingAudio(false)
     startOrRestartLoops()
-  }, [startOrRestartLoops])
+  }, [ensureAssignedAudioForSlots, slots, startOrRestartLoops])
 
   const toggleMasterMute = useCallback(() => {
     const nextMuted = !masterMutedRef.current
@@ -1246,14 +1616,12 @@ function App() {
   }, [])
 
   const handleStopReset = useCallback(() => {
+    console.log('[audio] reset stopping all')
     clearMasterCycle()
     clearAllAssignedDebugIntervals()
-    assignedAudioRef.current.forEach((audio) => {
-      audio.pause()
-      audio.muted = false
-      audio.currentTime = 0
-    })
+    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
+    console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
     masterMutedRef.current = false
     setMasterMuted(false)
     isPlayingRef.current = false
@@ -1394,10 +1762,29 @@ function App() {
     diagnosticNativeUrl === assignedBeatOneUrl
 
   return (
-    <div className="incrediboy">
+    <div className={`incrediboy ${stageEntered ? 'incrediboy--stage-visible' : ''}`}>
+      {!stageEntered && <IntroScreen exiting={introExiting} onStart={handleEnterStage} />}
+
+      <div className="incrediboy__main" aria-hidden={!stageEntered}>
       {/* TOP NAV — black bar */}
       <header className="top-nav">
-        <div className="top-nav__spacer" aria-hidden="true" />
+        <div className="top-nav__spacer" aria-hidden="true">
+          <span
+            style={{
+              fontSize: '10px',
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              padding: '2px 6px',
+              borderRadius: '3px',
+              background: isSharedMixLoad ? '#7c3aed' : '#15803d',
+              color: '#fff',
+              marginLeft: '6px',
+              verticalAlign: 'middle',
+            }}
+          >
+            {isSharedMixLoad ? 'SHARE BOOT' : 'CLEAN BOOT'}
+          </span>
+        </div>
         <nav className="top-nav__links" aria-label="Main">
           {NAV_LINKS.map((link) => (
             <button key={link} type="button" className="top-nav__link">
@@ -1454,14 +1841,35 @@ function App() {
               )}
             </svg>
           </button>
-          {[1, 2].map((i) => (
-            <button key={i} type="button" className="control-bar__mix control-bar__mix--locked" disabled aria-label="Locked mix">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="#999" aria-hidden="true">
-                <rect x="5" y="11" width="14" height="10" rx="2" />
-                <path d="M8 11V8a4 4 0 018 0v3" fill="none" stroke="#999" strokeWidth="2" />
-              </svg>
+          <button
+            type="button"
+            className="control-bar__mix-share"
+            onClick={handleSaveMix}
+            aria-label="Save mix to URL"
+          >
+            SAVE MIX
+          </button>
+          <button
+            type="button"
+            className="control-bar__mix-share control-bar__mix-share--copy"
+            onClick={() => {
+              void handleCopyShareLink()
+            }}
+            aria-label="Copy share link"
+          >
+            COPY SHARE LINK
+          </button>
+          {isSharedMixLoad && sharedMixAwaitingAudio && filledCount > 0 && (
+            <button
+              type="button"
+              className="control-bar__mix-share control-bar__mix-share--shared"
+              onClick={() => {
+                void handleStartSharedMix()
+              }}
+            >
+              START SHARED MIX
             </button>
-          ))}
+          )}
           <span className={`control-bar__status control-bar__status--${transportStatus.toLowerCase()}`}>
             {transportStatus}
           </span>
@@ -1475,10 +1883,14 @@ function App() {
               onChange={(e) => handlePackChange(e.target.value as ActivePackId)}
               aria-label="Audio pack"
             >
-              {Object.values(AUDIO_PACKS).map((pack) => (
-                <option key={pack.id} value={pack.id}>
-                  {pack.name}
-                </option>
+              {PACK_MENU.map(({ group, packs }) => (
+                <optgroup key={group} label={group}>
+                  {packs.map((id) => (
+                    <option key={id} value={id}>
+                      {AUDIO_PACKS[id].name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>
@@ -1532,6 +1944,12 @@ function App() {
           </button>
         </div>
       </motion.div>
+
+      {mixToast && (
+        <p className="mix-toast" role="status" aria-live="polite">
+          {mixToast}
+        </p>
+      )}
 
       {!audioReady && (
         <p className="incrediboy__hint">Tap any sound pad to enable audio.</p>
@@ -1620,6 +2038,7 @@ function App() {
         <span>Assigned beat-1 URL: {assignedBeatOneUrl || 'not assigned yet'}</span>
         <span>Same file URL: {audioDebugUrlsMatch ? 'yes' : 'not confirmed'}</span>
       </aside>
+      </div>
     </div>
   )
 }
