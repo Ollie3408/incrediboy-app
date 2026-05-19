@@ -852,6 +852,7 @@
   box-shadow:
     inset 0 28px 84px rgba(0, 0, 0, 0.44),
     inset 0 -96px 108px rgba(0, 0, 0, 0.68);
+  opacity: 0.72;
 }
 
 .stage::after {
@@ -882,7 +883,7 @@
     linear-gradient(173deg, transparent 18%, rgba(255, 255, 255, 0.075) 18.2%, transparent 19.2%),
     radial-gradient(ellipse at center, transparent 52%, rgba(0, 0, 0, 0.52) 100%);
   mix-blend-mode: screen;
-  opacity: 0.86;
+  opacity: 0.38;
 }
 
 .character-slots {
@@ -943,6 +944,69 @@
   opacity: 0.8;
   pointer-events: none;
   order: 2;
+  transition: width 0.3s ease, opacity 0.3s ease;
+}
+
+/* Larger, slightly tinted shadow when a character is assigned */
+.character-slot-wrap--filled::after {
+  width: 82%;
+  opacity: 0.92;
+  background: radial-gradient(
+    ellipse,
+    rgba(0, 0, 0, 0.52) 0%,
+    rgba(0, 0, 0, 0.22) 48%,
+    transparent 72%
+  );
+}
+
+/* Shadow breathes in sync with the beat */
+.character-slot-wrap--filled.character-slot-wrap--performing::after {
+  animation: ground-shadow-pulse var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+/* Shadow fades when muted */
+.character-slot-wrap--muted::after {
+  opacity: 0.35;
+}
+
+/* ── Per-slot coloured glow behind active characters ── */
+
+/* Ghost-glow element: absolute, behind character body, uses pad colour via --slot-pad-color */
+.character-slot-wrap--filled:not(.character-slot-wrap--perform-fx)::before {
+  content: '';
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 6%;
+  height: 58%;
+  z-index: 0;
+  border-radius: 50% 50% 35% 35%;
+  background: radial-gradient(
+    ellipse at 50% 100%,
+    var(--slot-pad-color, transparent) 0%,
+    transparent 72%
+  );
+  opacity: 0.22;
+  filter: blur(14px);
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+
+/* Glow pulses with the beat when the character is performing */
+.character-slot-wrap--filled:not(.character-slot-wrap--perform-fx).character-slot-wrap--performing::before {
+  animation: char-glow-pulse var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+/* Damp glow when muted */
+.character-slot-wrap--muted::before {
+  opacity: 0 !important;
+}
+
+/* Ensure character figure renders above the glow */
+.character-slot__body {
+  z-index: 1;
 }
 
 .character-slot-wrap--over .character-slot__body,
@@ -995,7 +1059,9 @@
 
 .character-slot-wrap--filled:not(.character-slot-wrap--performing):not(.character-slot-wrap--muted)
   .character-slot__body {
-  animation: character-idle 3.6s ease-in-out infinite;
+  animation: character-idle 2.6s ease-in-out infinite;
+  /* Stagger idle phase by slot so characters don't all bob in perfect sync */
+  animation-delay: calc(var(--slot-index, 0) * 0.38s);
 }
 
 .character-slot-wrap--empty .character-slot__body,
@@ -1171,8 +1237,12 @@
     transform: translateY(0) scale(1);
   }
 
-  50% {
-    transform: translateY(-4px) scale(1.008);
+  40% {
+    transform: translateY(-9px) scale(1.024);
+  }
+
+  70% {
+    transform: translateY(-4px) scale(1.012);
   }
 }
 
@@ -1270,6 +1340,32 @@
   }
 }
 
+@keyframes ground-shadow-pulse {
+  0%,
+  100% {
+    transform: scaleX(0.88);
+    opacity: 0.78;
+  }
+
+  45% {
+    transform: scaleX(1.12);
+    opacity: 1;
+  }
+}
+
+@keyframes char-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.18;
+    transform: scaleY(0.9) scaleX(0.95);
+  }
+
+  50% {
+    opacity: 0.48;
+    transform: scaleY(1.08) scaleX(1.04);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .control-bar__mix-share--shared {
     animation: none;
@@ -1278,7 +1374,9 @@
   .character-slot-wrap--performing .character-figure-frame,
   .character-slot-wrap--filled:not(.character-slot-wrap--performing):not(.character-slot-wrap--muted)
     .character-slot__body,
-  .character-slot-wrap--perform-fx.character-slot-wrap--performing::before {
+  .character-slot-wrap--perform-fx.character-slot-wrap--performing::before,
+  .character-slot-wrap--filled:not(.character-slot-wrap--perform-fx)::before,
+  .character-slot-wrap--filled.character-slot-wrap--performing::after {
     animation: none !important;
   }
 }

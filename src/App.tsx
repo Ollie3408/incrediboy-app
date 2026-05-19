@@ -865,7 +865,10 @@ function CharacterSlot({
       ]
         .filter(Boolean)
         .join(' ')}
-      style={{ ['--slot-index' as string]: String(index) }}
+      style={{
+        ['--slot-index' as string]: String(index),
+        ['--slot-pad-color' as string]: assignment?.color ?? 'transparent',
+      }}
     >
       <button
         type="button"
