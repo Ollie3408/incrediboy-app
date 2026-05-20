@@ -7,13 +7,19 @@
   --bar-h: 50px;
   --panel-h: clamp(148px, 20dvh, 176px);
   --stage-inner-h: calc(100dvh - var(--nav-h) - var(--bar-h) - var(--panel-h));
-  --slot-gap: clamp(3px, 0.45vw, 8px);
+  /* Wider gap prevents animation translateX (±9 px) from causing visual overlap.
+     The gap must be > max(translateX) × 2 = 18 px. */
+  --slot-gap: clamp(10px, 1.4vw, 20px);
   /* No extra inner scale — cover/contain handles sizing directly */
   --character-visual-scale: 1.0;
-  /* Width: 7 slots fill viewport; height: capped at 520px so placeholder becomes height-constrained
-     and fills the frame (placeholder AR 0.43 < frame AR at 520px, both empty & assigned fill equally) */
-  --character-frame-w: clamp(120px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 240px);
-  --character-frame-h: min(clamp(280px, 55vh, 520px), var(--stage-inner-h));
+  /* Width: 7 slots fill viewport; capped at 210 px so 7 chars + 6 gaps fit on 1400 px screens.
+     Height: 420 px keeps placeholder (portrait 0.43:1) height-constrained at slot widths ≥ 181 px,
+     giving equal visual height to both empty and assigned characters. */
+  --character-frame-w: clamp(110px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 210px);
+  --character-frame-h: min(clamp(240px, 46vh, 420px), var(--stage-inner-h));
+  /* Beat timing fallbacks — used by pad pulse animation when pad-panel can't inherit from .character-slots */
+  --beat-period: 600ms;
+  --bar-period: 2400ms;
   --nav-bg: #000000;
   --bar-bg: #ffffff;
   --stage-bg: #5a616b;
@@ -792,9 +798,38 @@
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
+  position: relative; /* needed for ::before connection beam */
   background:
     radial-gradient(circle at 50% 18%, rgba(125, 135, 150, 0.5), transparent 38%),
     linear-gradient(180deg, #343941 0%, #4d5661 52%, #23272f 100%);
+}
+
+/* ── Pad-to-character connection beam: warm glow at stage/pad boundary ── */
+.game-shell::before {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  /* Sit at the very top edge of the pad panel section */
+  bottom: calc(var(--panel-h) - 1px);
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at center bottom,
+    rgba(220, 100, 45, 0.52) 0%,
+    rgba(220, 100, 45, 0.18) 45%,
+    transparent 100%
+  );
+  filter: blur(5px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.55s ease;
+  z-index: 4;
+}
+
+/* Activate beam when at least one pad is performing */
+.game-shell:has(.sound-pad--performing)::before {
+  opacity: 1;
 }
 
 .incrediboy__hint {
@@ -827,6 +862,8 @@
   overflow-y: visible;
   box-sizing: border-box;
   background:
+    /* ── Overhead spotlight cone — warm amber from top-centre ── */
+    radial-gradient(ellipse 55% 50% at 50% 0%, rgba(230, 100, 55, 0.11) 0%, transparent 100%),
     radial-gradient(ellipse at center bottom, rgba(7, 5, 4, 0.42), transparent 52%),
     linear-gradient(180deg, #171012 0%, #251719 58%, #0f0d0f 100%);
   isolation: isolate;
@@ -894,7 +931,7 @@
   align-items: flex-end;
   gap: var(--slot-gap);
   width: 100%;
-  max-width: min(100vw, calc(var(--character-frame-w) * 7 + 6 * var(--slot-gap) + 8px));
+  max-width: min(100vw, calc(var(--character-frame-w) * 7 + 6 * var(--slot-gap) + 24px));
   height: 100%;
   min-height: 0;
   padding: 0 clamp(2px, 0.4vw, 6px);
@@ -909,15 +946,38 @@
   bottom: 0;
   z-index: -1;
   width: min(980px, 90vw);
-  height: 24%;
+  /* taller so the warm pool reaches higher on the characters' feet */
+  height: 32%;
   transform: translateX(-50%);
   border-radius: 50%;
   background:
-    radial-gradient(ellipse, rgba(0, 0, 0, 0.56) 0%, rgba(0, 0, 0, 0.24) 45%, transparent 72%),
+    /* warm amber floor pool — stage lighting hitting the ground */
+    radial-gradient(ellipse at 50% 65%, rgba(240, 80, 40, 0.12) 0%, transparent 65%),
+    radial-gradient(ellipse, rgba(0, 0, 0, 0.52) 0%, rgba(0, 0, 0, 0.22) 45%, transparent 72%),
     radial-gradient(ellipse at 18% 58%, rgba(208, 36, 255, 0.16), transparent 38%),
     radial-gradient(ellipse at 82% 58%, rgba(0, 231, 255, 0.14), transparent 38%);
   filter: blur(10px);
   pointer-events: none;
+}
+
+/* Thin hot-line at stage floor — feels like a lit edge strip */
+.character-slots::after {
+  content: '';
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 0;
+  height: 4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 90, 50, 0.42) 0%,
+    rgba(255, 120, 70, 0.16) 50%,
+    transparent 100%
+  );
+  filter: blur(3px);
+  pointer-events: none;
+  z-index: -1;
 }
 
 .character-slot-wrap {
@@ -1099,7 +1159,10 @@
 }
 
 .character-figure-frame {
-  width: var(--character-frame-w);
+  /* width: 100% so the frame always matches the flex slot width exactly;
+     max-width caps it at the computed target — prevents frame/slot divergence. */
+  width: 100%;
+  max-width: var(--character-frame-w);
   height: var(--character-frame-h);
   flex: 0 0 auto;
   display: flex;
@@ -1148,14 +1211,19 @@
      This gives ~2× the previous appear height and matches the placeholder's visual presence. */
   object-fit: cover;
   object-position: center bottom;
+  /* brightness(1.04): idle assigned characters read as slightly illuminated vs the dark stage */
   filter:
     drop-shadow(0 14px 20px rgba(0, 0, 0, 0.52))
-    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4));
+    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4))
+    brightness(1.04);
 }
 
 .character-figure--empty {
   mix-blend-mode: screen;
+  /* brightness(0.76): empty slots read as waiting/inactive vs lit active characters.
+     Applied before drop-shadow so only the character dims, not its shadow. */
   filter:
+    brightness(0.76)
     drop-shadow(0 10px 18px rgba(0, 0, 0, 0.55))
     drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
 }
@@ -1203,6 +1271,11 @@
 
 .character-slot-wrap--performing .character-figure--assigned {
   transform: none;
+  /* Performing characters look lit-up and alive */
+  filter:
+    drop-shadow(0 16px 24px rgba(0, 0, 0, 0.56))
+    drop-shadow(0 2px 4px rgba(0, 0, 0, 0.44))
+    brightness(1.12);
 }
 
 .character-slot-wrap--perform-fx.character-slot-wrap--performing::before {
@@ -1318,12 +1391,13 @@
   0%,
   100% {
     transform: scale(1);
-    filter: drop-shadow(0 14px 20px rgba(0, 0, 0, 0.52)) brightness(1);
+    /* match the performing .character-figure--assigned base brightness */
+    filter: drop-shadow(0 14px 20px rgba(0, 0, 0, 0.52)) brightness(1.12);
   }
 
   50% {
     transform: scale(1.04);
-    filter: drop-shadow(0 10px 28px rgba(0, 255, 214, 0.35)) brightness(1.12);
+    filter: drop-shadow(0 10px 28px rgba(0, 255, 214, 0.35)) brightness(1.22);
   }
 }
 
@@ -1366,6 +1440,211 @@
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   CHARACTER-TYPE PERFORMANCE ANIMATIONS
+   Each anim-{type} class overrides the generic perform-{category} animation
+   on .character-figure-frame when the slot is actively performing.
+   These rules are placed AFTER the generic perform- rules so they win via
+   cascade order (equal specificity, last wins).
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── DJ: smooth, cool side-to-side groove with head-nod feel ── */
+@keyframes dj-performance-groove {
+  0%,
+  100% {
+    transform: translateX(0) translateY(0) rotate(0deg);
+  }
+
+  20% {
+    transform: translateX(-5px) translateY(-6px) rotate(-2.5deg);
+  }
+
+  50% {
+    transform: translateX(0) translateY(-9px) rotate(0.5deg);
+  }
+
+  78% {
+    transform: translateX(5px) translateY(-6px) rotate(2.5deg);
+  }
+}
+
+/* ── Drummer: sharpest bounce + scale-punch on each beat hit ── */
+@keyframes drummer-performance-hit {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1) rotate(0deg);
+  }
+
+  10% {
+    transform: translateY(-19px) scale(1.04, 0.91) rotate(-1.5deg);
+  }
+
+  22% {
+    transform: translateY(-5px) scale(1.01, 0.99) rotate(0.5deg);
+  }
+
+  40% {
+    transform: translateY(-16px) scale(1.035, 0.93) rotate(1.5deg);
+  }
+
+  55% {
+    transform: translateY(-3px) scale(1, 1) rotate(0deg);
+  }
+}
+
+/* ── Guitarist: energetic body sway with lean ── */
+@keyframes guitarist-performance-strum {
+  0%,
+  100% {
+    transform: translateX(0) translateY(0) rotate(0deg);
+  }
+
+  22% {
+    transform: translateX(-9px) translateY(-4px) rotate(-3.8deg);
+  }
+
+  50% {
+    transform: translateX(0) translateY(-6px) rotate(-0.8deg);
+  }
+
+  76% {
+    transform: translateX(9px) translateY(-4px) rotate(3.8deg);
+  }
+}
+
+/* ── Rapper/Singer: confident bounce with attitude ── */
+@keyframes rapper-performance-bounce {
+  0%,
+  100% {
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+
+  18% {
+    transform: translateY(-10px) scale(1.034) rotate(-1.8deg);
+  }
+
+  36% {
+    transform: translateY(-3px) scale(1.01) rotate(0.6deg);
+  }
+
+  58% {
+    transform: translateY(-10px) scale(1.034) rotate(1.2deg);
+  }
+
+  78% {
+    transform: translateY(-2px) scale(1) rotate(0deg);
+  }
+}
+
+/* ── Default/Effect: safe small beat pulse fallback ── */
+@keyframes default-performance-pulse {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-6px) scale(1.026);
+  }
+}
+
+/* ── Selector rules: override generic perform- animation per anim type ──
+   Specificity is identical to the generic perform rules (two class selectors
+   + descendant combinator). Being defined later in the sheet, they win.      */
+
+.character-slot-wrap--anim-dj.character-slot-wrap--performing .character-figure-frame {
+  animation: dj-performance-groove var(--beat-period, 600ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--anim-drummer.character-slot-wrap--performing .character-figure-frame {
+  animation: drummer-performance-hit var(--beat-period, 600ms) cubic-bezier(0.22, 1.4, 0.36, 1)
+    infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--anim-guitarist.character-slot-wrap--performing .character-figure-frame {
+  animation: guitarist-performance-strum var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--anim-rapper.character-slot-wrap--performing .character-figure-frame {
+  animation: rapper-performance-bounce var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+.character-slot-wrap--anim-default.character-slot-wrap--performing .character-figure-frame {
+  animation: default-performance-pulse var(--bar-period, 2400ms) ease-in-out infinite;
+  animation-delay: var(--perform-delay, 0ms);
+}
+
+/* Responsive: tighten travel distance on small screens */
+@media (max-width: 768px) {
+  @keyframes dj-performance-groove {
+    0%,
+    100% {
+      transform: translateX(0) translateY(0) rotate(0deg);
+    }
+
+    20% {
+      transform: translateX(-3px) translateY(-4px) rotate(-2deg);
+    }
+
+    50% {
+      transform: translateX(0) translateY(-6px) rotate(0.3deg);
+    }
+
+    78% {
+      transform: translateX(3px) translateY(-4px) rotate(2deg);
+    }
+  }
+
+  @keyframes drummer-performance-hit {
+    0%,
+    100% {
+      transform: translateY(0) scale(1, 1);
+    }
+
+    10% {
+      transform: translateY(-13px) scale(1.03, 0.93) rotate(-1deg);
+    }
+
+    40% {
+      transform: translateY(-10px) scale(1.025, 0.95) rotate(1deg);
+    }
+  }
+
+  @keyframes guitarist-performance-strum {
+    0%,
+    100% {
+      transform: translateX(0) translateY(0) rotate(0deg);
+    }
+
+    22% {
+      transform: translateX(-6px) translateY(-3px) rotate(-2.8deg);
+    }
+
+    76% {
+      transform: translateX(6px) translateY(-3px) rotate(2.8deg);
+    }
+  }
+
+  @keyframes rapper-performance-bounce {
+    0%,
+    100% {
+      transform: translateY(0) scale(1);
+    }
+
+    18% {
+      transform: translateY(-7px) scale(1.024) rotate(-1.2deg);
+    }
+
+    58% {
+      transform: translateY(-7px) scale(1.024) rotate(1deg);
+    }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .control-bar__mix-share--shared {
     animation: none;
@@ -1378,6 +1657,15 @@
   .character-slot-wrap--filled:not(.character-slot-wrap--perform-fx)::before,
   .character-slot-wrap--filled.character-slot-wrap--performing::after {
     animation: none !important;
+  }
+
+  /* Disable pad pulse and freeze beam opacity for reduced-motion users */
+  .sound-pad--performing {
+    animation: none !important;
+  }
+
+  .game-shell::before {
+    transition: none !important;
   }
 }
 
@@ -1499,6 +1787,33 @@
   opacity: 0.4;
 }
 
+/* ── Performing pad: bright, coloured, and beat-pulsing ── */
+.sound-pad--performing {
+  /* Override the grey dimming from sound-pad--in-use */
+  filter: brightness(1.08) !important;
+  /* Framer Motion controls opacity via inline style; we don't touch it here */
+  animation: pad-beat-pulse var(--beat-period, 600ms) ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+@keyframes pad-beat-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1.04) drop-shadow(0 0 4px var(--pad-color, rgba(255, 255, 255, 0.3)));
+  }
+
+  50% {
+    transform: scale(1.07) translateY(-2px);
+    filter: brightness(1.18) drop-shadow(0 0 11px var(--pad-color, rgba(255, 255, 255, 0.6)));
+  }
+}
+
+/* ── Muted / paused in-use pads: slightly darker grey so performing pads pop ── */
+.game-shell--playing .sound-pad--in-use:not(.sound-pad--performing) {
+  filter: grayscale(1) brightness(0.62) !important;
+}
+
 .sound-pad__art {
   position: relative;
   z-index: 1;
@@ -1529,9 +1844,10 @@
 @media (max-height: 820px) {
   .incrediboy {
     --panel-h: clamp(136px, 18dvh, 160px);
+    --slot-gap: clamp(8px, 1.1vw, 16px);
     --character-visual-scale: 1.0;
-    --character-frame-h: min(clamp(240px, 48vh, 420px), var(--stage-inner-h));
-    --character-frame-w: clamp(112px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 188px);
+    --character-frame-h: min(clamp(200px, 44vh, 360px), var(--stage-inner-h));
+    --character-frame-w: clamp(100px, calc((100vw - 24px - 6 * var(--slot-gap)) / 7), 190px);
     --bar-h: 48px;
   }
 
@@ -1548,10 +1864,10 @@
 @media (max-width: 768px) {
   .incrediboy {
     --panel-h: clamp(128px, 19dvh, 152px);
-    --slot-gap: clamp(3px, 0.45vw, 8px);
+    --slot-gap: clamp(6px, 1vw, 13px);
     --character-visual-scale: 1.0;
-    --character-frame-h: min(clamp(210px, 42vh, 350px), var(--stage-inner-h));
-    --character-frame-w: clamp(100px, calc((100vw - 20px - 6 * var(--slot-gap)) / 7), 168px);
+    --character-frame-h: min(clamp(190px, 40vh, 320px), var(--stage-inner-h));
+    --character-frame-w: clamp(90px, calc((100vw - 16px - 6 * var(--slot-gap)) / 7), 155px);
   }
 
   .control-bar__mixes {

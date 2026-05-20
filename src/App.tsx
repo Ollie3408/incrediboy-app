@@ -420,6 +420,28 @@ function packPadCount(packId: ActivePackId): number {
   return ALL_PADS.filter((pad) => resolvePackAudioSrc(pad, packId)).length
 }
 
+/**
+ * Maps a pad's sound category to a character animation archetype.
+ * Used to give each character type a distinct movement style while performing.
+ *   beat       → DJ groove (smooth side-to-side head-nod)
+ *   percussion → Drummer (sharp beat-hit bounce)
+ *   melody     → Guitarist (energetic side sway)
+ *   voice      → Rapper/Singer (confident bounce)
+ *   effect     → Default (safe pulse fallback)
+ */
+type AnimType = 'dj' | 'drummer' | 'guitarist' | 'rapper' | 'default'
+
+function resolveAnimType(pad: PadDefinition): AnimType {
+  switch (pad.category) {
+    case 'beat':       return 'dj'
+    case 'percussion': return 'drummer'
+    case 'melody':     return 'guitarist'
+    case 'voice':      return 'rapper'
+    case 'effect':     return 'default'
+    default:           return 'default'
+  }
+}
+
 /** Visual performer style from the loop actually played (pack category), not just pad tile colour. */
 function resolvePerformanceCategory(
   pad: PadDefinition,
@@ -789,11 +811,13 @@ function SoundPad({
   pad,
   selected,
   inUse,
+  isPerforming,
   onSelect,
 }: {
   pad: PadDefinition
   selected: boolean
   inUse: boolean
+  isPerforming: boolean
   onSelect: (id: string) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
@@ -807,11 +831,18 @@ function SoundPad({
     <motion.button
       ref={setNodeRef}
       type="button"
-      className={`sound-pad sound-pad--${pad.category} ${selected ? 'sound-pad--selected' : ''} ${inUse ? 'sound-pad--in-use' : ''}`}
+      className={[
+        'sound-pad',
+        `sound-pad--${pad.category}`,
+        selected ? 'sound-pad--selected' : '',
+        inUse ? 'sound-pad--in-use' : '',
+        isPerforming ? 'sound-pad--performing' : '',
+      ].filter(Boolean).join(' ')}
       style={{
         ...style,
         background: pad.color,
         boxShadow: `inset 0 -4px 0 ${pad.accent}`,
+        ['--pad-color' as string]: pad.color,
       }}
       onClick={() => onSelect(pad.id)}
       whileTap={{ scale: 0.94 }}
@@ -851,6 +882,7 @@ function CharacterSlot({
     ? resolvePerformanceCategory(assignment, activePackId)
     : null
   const isPerforming = Boolean(assignment && isPlaying && !muted && !masterMuted)
+  const animType = assignment ? resolveAnimType(assignment) : null
 
   return (
     <motion.div
@@ -861,6 +893,7 @@ function CharacterSlot({
         assignment ? 'character-slot-wrap--filled' : 'character-slot-wrap--empty',
         isPerforming ? 'character-slot-wrap--performing' : '',
         performance ? `character-slot-wrap--perform-${performance}` : '',
+        animType ? `character-slot-wrap--anim-${animType}` : '',
         muted ? 'character-slot-wrap--muted' : '',
       ]
         .filter(Boolean)
@@ -1715,6 +1748,11 @@ function App() {
 
   const filledCount = slots.filter(Boolean).length
   const usedPadIds = useMemo(() => new Set(slots.filter(Boolean) as string[]), [slots])
+  // Pads actively playing (assigned + not muted + not master-muted + isPlaying)
+  const performingPadIds = useMemo(() => {
+    if (!isPlaying || masterMuted) return new Set<string>()
+    return new Set(slots.filter((padId, i) => padId && !mutedSlots.has(i)) as string[])
+  }, [isPlaying, masterMuted, slots, mutedSlots])
   const audioDebugUrlsMatch =
     Boolean(diagnosticNativeUrl && assignedBeatOneUrl) &&
     diagnosticNativeUrl === assignedBeatOneUrl
@@ -1914,7 +1952,7 @@ function App() {
       )}
 
       <DndContext onDragEnd={handleDragEnd}>
-        <div className="game-shell">
+        <div className={`game-shell ${isPlaying ? 'game-shell--playing' : ''}`}>
           <main className="stage" aria-label="Characters">
             <motion.div
               className="character-slots"
@@ -1964,6 +2002,7 @@ function App() {
                       pad={pad}
                       selected={selectedPadId === pad.id}
                       inUse={usedPadIds.has(pad.id)}
+                      isPerforming={performingPadIds.has(pad.id)}
                       onSelect={handlePadSelect}
                     />
                   ))}
