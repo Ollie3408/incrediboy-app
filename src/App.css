@@ -501,7 +501,9 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 0.85rem;
+  gap: clamp(5px, 0.5vw, 12px);
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .control-bar__mix {
@@ -537,17 +539,17 @@
 }
 
 .control-bar__mix-share {
-  min-width: 92px;
+  min-width: 0;
   height: 34px;
   border-radius: 17px;
   border: 2px solid var(--ink);
   background: #fff;
   color: var(--ink);
-  font-size: 0.58rem;
+  font-size: clamp(0.52rem, 0.82vw, 0.58rem);
   font-weight: 900;
   letter-spacing: 0.06em;
   cursor: pointer;
-  padding: 0 0.65rem;
+  padding: 0 clamp(0.4rem, 0.6vw, 0.65rem);
   white-space: nowrap;
   transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
@@ -568,7 +570,7 @@
 
 .control-bar__mix-share--shared {
   background: linear-gradient(135deg, #9bff70 0%, #5ce0a8 100%);
-  min-width: 118px;
+  min-width: 0;
   animation: shared-mix-pulse 2.4s ease-in-out infinite;
 }
 
@@ -623,21 +625,26 @@
   justify-self: end;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: clamp(4px, 0.45vw, 10px);
+  /* buttons wrap within this column rather than overflowing */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .control-bar__field {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: clamp(2px, 0.3vw, 6px);
   color: var(--ink);
-  font-size: 0.58rem;
+  font-size: clamp(0.5rem, 0.78vw, 0.58rem);
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
 }
 
 .control-bar__field input[type='range'] {
-  width: clamp(72px, 9vw, 116px);
+  width: clamp(52px, 6.5vw, 110px);
   accent-color: #9b4dca;
 }
 
@@ -655,28 +662,32 @@
 
 .control-bar__pack-select {
   height: 28px;
+  /* shrinks on narrow columns; 150px max prevents it growing too wide */
+  width: clamp(72px, 10vw, 150px);
   max-width: 150px;
+  min-width: 0;
   border: 2px solid var(--ink);
   border-radius: 14px;
   background: #fff;
   color: var(--ink);
   font-size: 0.58rem;
   font-weight: 800;
-  padding: 0 0.45rem;
+  padding: 0 0.35rem;
 }
 
 .control-bar__reset {
-  min-width: 72px;
+  min-width: 0;
   height: 34px;
   border-radius: 17px;
   border: 2px solid var(--ink);
   background: #fff;
   color: var(--ink);
-  font-size: 0.62rem;
+  font-size: clamp(0.52rem, 0.82vw, 0.62rem);
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.07em;
   cursor: pointer;
-  padding: 0 1rem;
+  padding: 0 clamp(0.45rem, 0.7vw, 1rem);
+  white-space: nowrap;
 }
 
 .control-bar__reset:hover {
@@ -686,17 +697,18 @@
 }
 
 .control-bar__loops {
-  min-width: 118px;
+  min-width: 0;
   height: 36px;
   border-radius: 18px;
   border: 2px solid #111;
   background: #9bff70;
   color: #111;
-  font-size: 0.64rem;
+  font-size: clamp(0.52rem, 0.84vw, 0.64rem);
   font-weight: 900;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.07em;
   cursor: pointer;
-  padding: 0 1rem;
+  padding: 0 clamp(0.5rem, 0.75vw, 1rem);
+  white-space: nowrap;
 }
 
 .control-bar__loops:hover:not(:disabled) {
@@ -714,7 +726,7 @@
 
 .control-bar__loops--shared {
   background: linear-gradient(135deg, #9bff70 0%, #5ce0a8 100%);
-  min-width: 132px;
+  min-width: 0;
   animation: shared-mix-pulse 2.4s ease-in-out infinite;
 }
 
@@ -1858,6 +1870,53 @@
   .audio-diagnostic-panel,
   .audio-debug-url-box {
     display: none;
+  }
+}
+
+/* ── Medium: switch bar to flex-wrap so transport collapses to its own row ── */
+@media (max-width: 900px) {
+  .control-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    min-height: var(--bar-h);
+    padding: 3px clamp(8px, 1.5vw, 16px);
+    column-gap: clamp(6px, 0.8vw, 12px);
+    row-gap: 0;
+  }
+
+  .control-bar__left {
+    flex: 0 0 auto;
+  }
+
+  .control-bar__mixes {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+
+  /* Transport drops to its own full-width second row */
+  .control-bar__transport {
+    justify-self: auto;
+    flex: 0 0 100%;
+    justify-content: flex-end;
+    border-top: 1px solid #eee;
+    padding: 3px 0;
+    gap: clamp(3px, 0.4vw, 7px);
+  }
+
+  .control-bar__loops,
+  .control-bar__reset {
+    font-size: 0.52rem;
+    padding: 0 0.5rem;
+    height: 30px;
+  }
+
+  .control-bar__field input[type='range'] {
+    width: clamp(44px, 6vw, 72px);
+  }
+
+  .control-bar__pack-select {
+    width: clamp(64px, 9vw, 110px);
   }
 }
 
