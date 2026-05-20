@@ -18,6 +18,7 @@ import { motion } from 'framer-motion'
 import * as Tone from 'tone'
 import { beatsBoxCuratedPack1 } from './generated/audioPacks/beatsBoxCuratedPack1'
 import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
+import { cyberpunkPack1 } from './generated/audioPacks/cyberpunkPack1'
 import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import {
@@ -32,6 +33,19 @@ import {
   type SavedMix,
 } from './mixShare'
 import { IntroScreen } from './IntroScreen'
+import {
+  type MusicalClock,
+  type QuantizeMode,
+  clockWithBpm,
+  computeCategoryGains,
+  computePlaybackRate,
+  currentBarInLoop,
+  currentBeatInBar,
+  makeClock,
+  msUntilNextBoundary,
+  scheduleGainRamp,
+  validateLoopTiming,
+} from './musicClock'
 import './App.css'
 
 // =============================================================================
@@ -275,12 +289,41 @@ type ActivePackId =
   | 'trance-curated-pack-1'
   | 'beats-box-pack-1'
   | 'beats-box-curated-pack-1'
-type PackAudioCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice' | 'percussion'
+  | 'cyberpunk-pack-1'
+type PackAudioCategory =
+  | 'beat'
+  | 'bass'
+  | 'melody'
+  | 'fx'
+  | 'voice'
+  | 'percussion'
+  | 'transition'
+  | 'atmosphere'
 type PackPadAudio = {
   id: string
   category: PackAudioCategory
   audioFile: string
   sourceFile: string
+  /** Per-pad volume multiplier (0–1). Multiplied with master volume when
+   *  setting audio element volume. Defaults to 1.0 if omitted. */
+  volume?: number
+  /** 'one-shot' pads play once and stop; 'loop' pads repeat continuously.
+   *  FX, buildups, risers, hits and transitions should be 'one-shot'.
+   *  Beats, bass, melody, vocals and atmospheres should be 'loop'.
+   *  Defaults to 'loop' if omitted. */
+  playbackMode?: 'loop' | 'one-shot'
+  /** Quantization grid for when this pad starts playing during an active session.
+   *  'immediate' = no delay, 'beat' = next quarter-note, 'bar' = next measure.
+   *  Defaults: loops → 'bar', vocals → 'beat', one-shots → 'immediate'. */
+  playbackQuantization?: QuantizeMode
+  /** When true, applies a gentle playbackRate correction (±2 %) to align
+   *  a drifting loop to the 105 BPM/4-bar grid. Currently disabled globally —
+   *  set per-pad in the pack config when drift correction is desired. */
+  allowDriftCorrection?: boolean
+  /** BPM of this audio file — used for loop validation and drift correction. */
+  bpm?: number | null
+  /** Number of bars in this audio file — used for loop validation. */
+  bars?: number | null
 }
 type RuntimeAudioPack = {
   id: ActivePackId
@@ -334,6 +377,34 @@ const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
     })),
     audioUrls: bundledBeatsBoxPackAudioUrls,
   },
+  'cyberpunk-pack-1': {
+    id: cyberpunkPack1.id as ActivePackId,
+    name: cyberpunkPack1.name,
+    pads: cyberpunkPack1.pads.map((pad) => {
+      type CP = {
+        volume?: number
+        playbackMode?: string
+        playbackQuantization?: string
+        allowDriftCorrection?: boolean
+        bpm?: number | null
+        bars?: number | null
+      }
+      const cp = pad as CP
+      return {
+        id: pad.id,
+        category: pad.category as PackAudioCategory,
+        audioFile: pad.audioFile,
+        sourceFile: pad.sourceFile,
+        volume: cp.volume,
+        playbackMode: cp.playbackMode as 'loop' | 'one-shot' | undefined,
+        playbackQuantization: cp.playbackQuantization as QuantizeMode | undefined,
+        allowDriftCorrection: cp.allowDriftCorrection,
+        bpm: cp.bpm,
+        bars: cp.bars,
+      }
+    }),
+    audioUrls: cyberpunkPack1.audioUrls,
+  },
 }
 
 const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
@@ -349,17 +420,53 @@ const CURATED_SLOT_PAD_IDS = new Set(ROW_A.slice(0, 7).map((pad) => pad.id))
 const CURATED_PACK_IDS = new Set<ActivePackId>([
   'trance-curated-pack-1',
   'beats-box-curated-pack-1',
+  'cyberpunk-pack-1',
 ])
 
 /** Ordered list of pack entries shown in the UI dropdown. */
 const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
-    packs: ['trance-curated-pack-1', 'beats-box-curated-pack-1'],
+    packs: ['trance-curated-pack-1', 'beats-box-curated-pack-1', 'cyberpunk-pack-1'],
   },
   {
     group: 'Advanced — Raw Packs',
     packs: ['trance-pack-1', 'beats-box-pack-1'],
+  },
+]
+
+/**
+ * Cyberpunk Pack 1 — two-row grouped pad panel layout.
+ * Mirrors the default pack's 2 × 12 grid structure so pad sizes match exactly.
+ *
+ * Row 1 (12 pads): BEATS(4) | BASS(4) | MELODY(4)
+ * Row 2 (12 pads): FX(4)    | VOCALS(3) | TRANSITIONS(3) | ATMOSPHERES(2)
+ *
+ * Each group's padIds maps to game pad IDs set by the 24-pad curated index:
+ *   beat-0..3       → BEATS
+ *   percussion-0..3 → BASS
+ *   melody-0..2, melody-4 → MELODY
+ *   effect-0..3     → FX
+ *   voice-0..2      → VOCALS
+ *   beat-4, percussion-4, voice-3 → TRANSITIONS
+ *   melody-3, voice-4 → ATMOSPHERES
+ */
+type CyberpunkPadGroup = { label: string; color: string; padIds: string[] }
+const CYBERPUNK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
+  {
+    groups: [
+      { label: 'BEATS',  color: '#9b4dca', padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3'] },
+      { label: 'BASS',   color: '#e88c2a', padIds: ['percussion-0', 'percussion-1', 'percussion-2', 'percussion-3'] },
+      { label: 'MELODY', color: '#3b8fe0', padIds: ['melody-0', 'melody-1', 'melody-2', 'melody-4'] },
+    ],
+  },
+  {
+    groups: [
+      { label: 'FX',          color: '#3cb878', padIds: ['effect-0', 'effect-1', 'effect-2', 'effect-3'] },
+      { label: 'VOCALS',      color: '#e04545', padIds: ['voice-0', 'voice-1', 'voice-2'] },
+      { label: 'TRANSITIONS', color: '#3cb878', padIds: ['beat-4', 'percussion-4', 'voice-3'] },
+      { label: 'ATMOSPHERES', color: '#5c8ee0', padIds: ['melody-3', 'voice-4'] },
+    ],
   },
 ]
 
@@ -376,6 +483,8 @@ function groupPackPads(pack: RuntimeAudioPack): Record<PackAudioCategory, PackPa
       fx: [],
       voice: [],
       percussion: [],
+      transition: [],
+      atmosphere: [],
     } as Record<PackAudioCategory, PackPadAudio[]>,
   )
 }
@@ -388,6 +497,13 @@ function lookupPackAudio(pack: RuntimeAudioPack, filename: string): string | und
 }
 
 function packPadForGamePad(pad: PadDefinition, pack: RuntimeAudioPack): PackPadAudio | undefined {
+  // Full 24-pad curated packs: map each game pad directly by ALL_PADS index
+  if (CURATED_PACK_IDS.has(pack.id) && pack.pads.length >= 24) {
+    const padIndex = ALL_PADS.findIndex((p) => p.id === pad.id)
+    return padIndex >= 0 ? (pack.pads[padIndex] as PackPadAudio | undefined) : undefined
+  }
+
+  // Standard 7-pad curated packs: only populate the first 7 ROW_A slots
   if (CURATED_PACK_IDS.has(pack.id) && CURATED_SLOT_PAD_IDS.has(pad.id)) {
     const visiblePadIndex = ROW_A.findIndex((visiblePad) => visiblePad.id === pad.id)
     const curatedPad = pack.pads[visiblePadIndex]
@@ -869,6 +985,85 @@ function SoundPad({
   )
 }
 
+// =============================================================================
+// BEAT DEBUG OVERLAY — dev-only timing HUD
+// =============================================================================
+
+/**
+ * Dev-only overlay that shows the current beat, bar, BPM, and the number of
+ * pads waiting in the quantize queue. Visible only when import.meta.env.DEV.
+ *
+ * HOW TO USE: assign pads while music plays and watch "Q:" increment while the
+ * pad waits for its bar/beat boundary, then drop to 0 once it starts.
+ *
+ * HOW TO DISABLE: remove the <BeatDebugOverlay> element from the JSX below.
+ */
+function BeatDebugOverlay({
+  clock,
+  queueSize,
+  bpm,
+}: {
+  clock: MusicalClock
+  queueSize: number
+  bpm: number
+}) {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (clock.originMs === 0) return
+    const id = window.setInterval(() => setTick((t) => t + 1), 80)
+    return () => window.clearInterval(id)
+  }, [clock.originMs])
+
+  const beat = currentBeatInBar(clock)
+  const bar = currentBarInLoop(clock)
+
+  return (
+    <div className="beat-debug-overlay" aria-hidden="true">
+      <span className={`beat-debug-overlay__beat beat-debug-overlay__beat--${beat}`}>
+        ♩{beat}
+      </span>
+      <span>bar {bar}</span>
+      <span>{bpm} BPM</span>
+      {queueSize > 0 && <span className="beat-debug-overlay__queue">Q:{queueSize}</span>}
+      {/* Force re-render on tick to update readouts */}
+      <span style={{ display: 'none' }}>{tick}</span>
+    </div>
+  )
+}
+
+// =============================================================================
+// MIX VISUALIZER — lightweight CSS-animated equalizer bars
+// =============================================================================
+
+function MixVisualizer({
+  isPlaying,
+  beatPeriodMs,
+}: {
+  isPlaying: boolean
+  beatPeriodMs: number
+}) {
+  return (
+    <div
+      className={`mix-visualizer${isPlaying ? ' mix-visualizer--active' : ''}`}
+      style={{ '--beat-period': `${beatPeriodMs}ms` } as CSSProperties}
+      aria-hidden="true"
+      title={isPlaying ? 'Mix playing' : 'Mix stopped'}
+    >
+      {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+        <span
+          key={i}
+          className="mix-visualizer__bar"
+          style={{ '--bar-i': i } as CSSProperties}
+        />
+      ))}
+    </div>
+  )
+}
+
+// =============================================================================
+// CHARACTER SLOT
+// =============================================================================
+
 function CharacterSlot({
   index,
   assignment,
@@ -896,6 +1091,24 @@ function CharacterSlot({
   const isPerforming = Boolean(assignment && isPlaying && !muted && !masterMuted)
   const animType = assignment ? resolveAnimType(assignment) : null
 
+  // Track assignment transitions for drop/remove feedback
+  const prevAssignmentRef = useRef<SlotAssignment>(assignment)
+  const [dropFlash, setDropFlash] = useState<'in' | 'out' | null>(null)
+  useEffect(() => {
+    const prev = prevAssignmentRef.current
+    prevAssignmentRef.current = assignment
+    if (!prev && assignment) {
+      setDropFlash('in')
+      const t = window.setTimeout(() => setDropFlash(null), 580)
+      return () => window.clearTimeout(t)
+    }
+    if (prev && !assignment) {
+      setDropFlash('out')
+      const t = window.setTimeout(() => setDropFlash(null), 360)
+      return () => window.clearTimeout(t)
+    }
+  }, [assignment])
+
   return (
     <motion.div
       ref={setNodeRef}
@@ -907,6 +1120,8 @@ function CharacterSlot({
         performance ? `character-slot-wrap--perform-${performance}` : '',
         animType ? `character-slot-wrap--anim-${animType}` : '',
         muted ? 'character-slot-wrap--muted' : '',
+        dropFlash === 'in' ? 'character-slot-wrap--just-assigned' : '',
+        dropFlash === 'out' ? 'character-slot-wrap--just-removed' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -1041,11 +1256,34 @@ function App() {
   const sharedMixHydratedRef = useRef(false)
 
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
+  /** Per-slot pad volume multiplier (0–1). Set when a pad is assigned. */
+  const padVolumeRef = useRef<Map<number, number>>(new Map())
+  // Tracks which slots hold one-shot pads (loop = false) vs continuous loops
+  const padOneShotRef = useRef<Map<number, boolean>>(new Map())
+  /** Shared Web Audio context for the master dynamics compressor. */
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const masterCompressorRef = useRef<DynamicsCompressorNode | null>(null)
+  /** MediaElementSourceNodes keyed by slot — needed for cleanup. */
+  const sourceNodesRef = useRef<Map<number, MediaElementAudioSourceNode>>(new Map())
   const masterCycleIntervalRef = useRef<number | null>(null)
   const isPlayingRef = useRef(false)
   const masterMutedRef = useRef(false)
   const mutedSlotsRef = useRef<Set<number>>(new Set())
   const volumeRef = useRef(volume)
+  // ── Musical clock & quantization ──────────────────────────────────────────
+  /** Live musical clock — updated in startOrRestartLoops and on BPM change. */
+  const musicalClockRef = useRef<MusicalClock>(makeClock(DEFAULT_BPM, MASTER_LOOP_MS))
+  /** Pending quantize setTimeout IDs keyed by slot index.
+   *  Cancelled in disposeAssignedAudio so removing a pad before its
+   *  scheduled play-start doesn't trigger a ghost audio start. */
+  const quantizeTimersRef = useRef<Map<number, number>>(new Map())
+  /** Ref mirror of isReplayingMix state for synchronous checks inside
+   *  callbacks without stale closure problems. */
+  const isReplayingMixRef = useRef(false)
+  /** Per-slot gain multipliers for category gain staging.
+   *  Updated whenever slots or activePackId change.
+   *  Keyed by slot index — same lookup pattern as padVolumeRef. */
+  const categoryGainRef = useRef<Map<number, number>>(new Map())
   const diagnosticNativeAudioRef = useRef<HTMLAudioElement | null>(null)
   const diagnosticTonePlayerRef = useRef<Tone.Player | null>(null)
   const diagnosticNativeIntervalRef = useRef<number | null>(null)
@@ -1175,6 +1413,33 @@ function App() {
   useEffect(() => {
     volumeRef.current = volume
   }, [volume])
+
+  // Keep musical clock BPM-derived timings in sync whenever BPM changes.
+  useEffect(() => {
+    musicalClockRef.current = clockWithBpm(musicalClockRef.current, bpm)
+  }, [bpm])
+
+  // Recompute per-slot category gain staging whenever slots or pack change.
+  // computeCategoryGains returns per-category multipliers; we then map to per-slot.
+  useEffect(() => {
+    const counts: Partial<Record<string, number>> = {}
+    const slotCategories: Array<{ slot: number; category: string }> = []
+    for (let i = 0; i < slots.length; i++) {
+      const padId = slots[i]
+      if (!padId) continue
+      const pad = PAD_BY_ID[padId]
+      if (!pad) continue
+      const packPad = packPadForGamePad(pad, AUDIO_PACKS[activePackId])
+      const cat = (packPad?.category ?? pad.category) as string
+      counts[cat] = (counts[cat] ?? 0) + 1
+      slotCategories.push({ slot: i, category: cat })
+    }
+    const categoryMultipliers = computeCategoryGains(counts)
+    categoryGainRef.current.clear()
+    for (const { slot, category } of slotCategories) {
+      categoryGainRef.current.set(slot, categoryMultipliers.get(category) ?? 1.0)
+    }
+  }, [slots, activePackId])
 
   useEffect(() => {
     if (!mixToast) return
@@ -1384,19 +1649,19 @@ function App() {
     Object.values(previewRef.current.players).forEach((player) => {
       if (player) player.volume.value = db
     })
-    const normalized = normalizedVolume(volume)
     assignedAudioRef.current.forEach((audio, slot) => {
       audio.volume = isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)
-        ? normalized
+        ? padEffVol(slot)
         : 0
     })
-    console.log('[volume] updated', { value: volume, normalized })
+    console.log('[volume] updated', { value: volume, normalized: normalizedVolume(volume) })
   }, [volume])
 
   /** Cancel all scheduled replay timeouts and mark replay as inactive. */
   const clearReplayTimers = useCallback(() => {
     replayTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
     replayTimeoutsRef.current = []
+    isReplayingMixRef.current = false
     setIsReplayingMix(false)
   }, [])
 
@@ -1407,56 +1672,196 @@ function App() {
       // Cancel replay events on unmount so stale timeouts can't fire
       replayTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
       replayTimeoutsRef.current = []
+      // Close the shared Web Audio context
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        void audioCtxRef.current.close()
+      }
     }
   }, [clearAllAssignedDebugIntervals, clearMasterCycle])
 
-  const restartAssignedAudioCycle = useCallback(() => {
-    console.log('[assigned] master cycle restart')
+  /**
+   * Effective volume for a slot = master volume × per-pad multiplier × category gain.
+   * Falls back to 1.0 for missing multipliers (preserves existing pack behaviour).
+   * Category gain provides subtle attenuation when many same-type layers are active.
+   * categoryGainRef is keyed by slot index and refreshed whenever slots change.
+   */
+  const padEffVol = useCallback((slotIndex: number): number => {
+    const padVol = padVolumeRef.current.get(slotIndex) ?? 1.0
+    const categoryGain = categoryGainRef.current.get(slotIndex) ?? 1.0
+    return normalizedVolume(volumeRef.current) * padVol * categoryGain
+  }, [])
+
+  /** Dev-only report: loop mode, duration drift, manual-restart status per slot. */
+  const logAssignedAudioDiagnostics = useCallback(() => {
+    if (!import.meta.env.DEV) return
+    const rows: Array<Record<string, unknown>> = []
     assignedAudioRef.current.forEach((audio, slot) => {
-      if (!assignedAudioHasSrc(audio)) {
-        console.warn('[audio] play skipped — no src', { slot })
-        return
+      const isOneShot = padOneShotRef.current.get(slot) ?? false
+      const padId = slots[slot]
+      const pad = padId ? PAD_BY_ID[padId] : undefined
+      const packPad = pad ? packPadForGamePad(pad, AUDIO_PACKS[activePackId]) : undefined
+      const bpm = packPad?.bpm ?? null
+      const bars = packPad?.bars ?? null
+      const actual = audio.duration > 0 ? audio.duration : null
+      let driftPct: string | null = null
+      if (bpm && bars && actual) {
+        const expected = (60 / bpm) * 4 * bars
+        driftPct = `${((Math.abs(actual - expected) / expected) * 100).toFixed(2)}%`
       }
-
-      if (mutedSlotsRef.current.has(slot)) {
-        audio.pause()
-        return
-      }
-
-      audio.loop = true
-      audio.muted = false
-      audio.currentTime = 0
-      audio.volume = isPlayingRef.current && !masterMutedRef.current ? normalizedVolume(volumeRef.current) : 0
-      console.log('[audio] play requested', { slot, url: audio.currentSrc || audio.src })
-      void audio
-        .play()
-        .then(() => console.log('[audio] play resolved', { slot }))
-        .catch((error) => console.warn('[audio] play failed', { slot, url: audio.currentSrc || audio.src, error }))
-
-      if (!assignedDebugIntervalsRef.current.has(slot)) {
-        const interval = window.setInterval(() => {
-          console.log('[assigned] currentTime', {
-            slot,
-            currentTime: audio.currentTime,
-            duration: audio.duration,
-            paused: audio.paused,
-            loop: audio.loop,
-          })
-        }, 1000)
-        assignedDebugIntervalsRef.current.set(slot, interval)
-      }
+      rows.push({
+        slot,
+        padId: padId ?? '—',
+        mode: isOneShot ? 'one-shot' : 'native-loop',
+        nativeLoop: !isOneShot,
+        manualCycleRestart: false,
+        paused: audio.paused,
+        duration: actual?.toFixed(3) ?? '—',
+        drift: driftPct ?? '—',
+      })
     })
+    console.log('[loop-diagnostics] assigned audio report (native loop — no manual cycle restart)')
+    if (rows.length > 0) console.table(rows)
+    else console.log('[loop-diagnostics] no assigned audio')
+  }, [slots, activePackId])
+
+  /**
+   * Start one assigned slot once.
+   * Loop pads use native audio.loop and are NOT restarted on master cycle ticks.
+   * One-shots play a single time and stop naturally.
+   *
+   * @param forceRestart  Reset currentTime and replay from start (PLAY LOOPS / session start).
+   * @param fadeIn        Apply micro fade-in ramp on first start only (default true).
+   */
+  const startAssignedSlotAudio = useCallback(
+    (
+      slot: number,
+      audio: HTMLAudioElement,
+      options: { fadeIn?: boolean; forceRestart?: boolean; vol?: number } = {},
+    ): void => {
+      if (!assignedAudioHasSrc(audio)) return
+
+      const isOneShot = padOneShotRef.current.get(slot) ?? false
+      audio.loop = !isOneShot
+      audio.muted = false
+
+      const slotMuted = mutedSlotsRef.current.has(slot) || masterMutedRef.current
+      const targetVol =
+        options.vol ?? (slotMuted ? 0 : padEffVol(slot))
+
+      // Muted loop pads: keep playing silently so phase stays locked when unmuted
+      if (targetVol <= 0 && !isOneShot && isPlayingRef.current) {
+        audio.volume = 0
+        if (audio.paused) {
+          void audio.play().catch((err) =>
+            console.warn('[audio] silent loop play failed', { slot, err }),
+          )
+        }
+        return
+      }
+
+      if (targetVol <= 0) {
+        audio.volume = 0
+        if (isOneShot) audio.pause()
+        return
+      }
+
+      const alreadyPlaying = !audio.paused && audio.currentTime > 0.01
+      const shouldRestart = options.forceRestart ?? !alreadyPlaying
+
+      if (shouldRestart) {
+        audio.currentTime = 0
+        audio.volume = 0
+        void audio
+          .play()
+          .then(() => {
+            if (options.fadeIn !== false) {
+              scheduleGainRamp(audio, targetVol)
+            } else {
+              audio.volume = targetVol
+            }
+            console.log('[audio] slot started', {
+              slot,
+              isOneShot,
+              nativeLoop: !isOneShot,
+              fadeIn: options.fadeIn !== false,
+            })
+          })
+          .catch((err) => console.warn('[audio] slot play failed', { slot, err }))
+      } else {
+        // Already playing — update volume only, never reset currentTime
+        audio.volume = targetVol
+      }
+    },
+    [padEffVol],
+  )
+
+  /** Start every assigned slot once at session start / explicit restart. */
+  const startAllAssignedAudio = useCallback(
+    (options?: { forceRestart?: boolean; fadeIn?: boolean }) => {
+      assignedAudioRef.current.forEach((audio, slot) => {
+        startAssignedSlotAudio(slot, audio, {
+          forceRestart: options?.forceRestart ?? true,
+          fadeIn: options?.fadeIn ?? true,
+        })
+      })
+      logAssignedAudioDiagnostics()
+    },
+    [startAssignedSlotAudio, logAssignedAudioDiagnostics],
+  )
+
+  /** Re-anchor musical clock only — does NOT restart audio (gapless native loops). */
+  const tickMasterClock = useCallback(() => {
+    musicalClockRef.current = { ...musicalClockRef.current, originMs: performance.now() }
+    if (import.meta.env.DEV) {
+      console.debug('[master] clock re-anchored (audio untouched)', { loopMs: MASTER_LOOP_MS })
+    }
   }, [])
 
   const startOrRestartLoops = useCallback(() => {
     clearMasterCycle()
+    quantizeTimersRef.current.forEach((id) => window.clearTimeout(id))
+    quantizeTimersRef.current.clear()
+    musicalClockRef.current = { ...musicalClockRef.current, originMs: performance.now() }
     isPlayingRef.current = true
     setIsPlaying(true)
     setTransportStatus(masterMutedRef.current ? 'Paused' : 'Playing')
-    restartAssignedAudioCycle()
-    masterCycleIntervalRef.current = window.setInterval(restartAssignedAudioCycle, MASTER_LOOP_MS)
-    console.log('[master] start/restart loops', { loopMs: MASTER_LOOP_MS })
-  }, [clearMasterCycle, restartAssignedAudioCycle])
+    // Start each slot once — browser native loop handles seamless repetition
+    startAllAssignedAudio({ forceRestart: true, fadeIn: true })
+    // Master interval only updates the musical clock for quantization timing
+    masterCycleIntervalRef.current = window.setInterval(tickMasterClock, MASTER_LOOP_MS)
+    console.log('[master] session started', { loopMs: MASTER_LOOP_MS, gaplessNativeLoop: true })
+  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock])
+
+  /**
+   * Lazily create a shared AudioContext + DynamicsCompressor chain.
+   * Called inside user-gesture callbacks so browser autoplay policy is met.
+   * Returns null if the Web Audio API is unavailable (logs a warning instead).
+   */
+  const ensureAudioCtx = useCallback((): {
+    ctx: AudioContext
+    compressor: DynamicsCompressorNode
+  } | null => {
+    try {
+      if (!audioCtxRef.current) {
+        const ctx = new AudioContext()
+        const comp = ctx.createDynamicsCompressor()
+        // Conservative settings: transparent at low levels, catches peaks
+        comp.threshold.setValueAtTime(-18, ctx.currentTime)
+        comp.knee.setValueAtTime(20, ctx.currentTime)
+        comp.ratio.setValueAtTime(6, ctx.currentTime)
+        comp.attack.setValueAtTime(0.005, ctx.currentTime)
+        comp.release.setValueAtTime(0.30, ctx.currentTime)
+        comp.connect(ctx.destination)
+        audioCtxRef.current = ctx
+        masterCompressorRef.current = comp
+        console.log('[audio] compressor chain created')
+      }
+      return { ctx: audioCtxRef.current, compressor: masterCompressorRef.current! }
+    } catch (e) {
+      console.warn('[audio] AudioContext unavailable — running without compressor', e)
+      return null
+    }
+  }, [])
 
   const disposeAssignedAudio = useCallback((slotIndex: number) => {
     const audio = assignedAudioRef.current.get(slotIndex)
@@ -1464,6 +1869,20 @@ function App() {
     clearAssignedDebugInterval(slotIndex)
     assignedAudioRef.current.delete(slotIndex)
     stopAssignedAudioElement(audio)
+    // Disconnect and remove the Web Audio source node for this slot
+    const srcNode = sourceNodesRef.current.get(slotIndex)
+    if (srcNode) {
+      try { srcNode.disconnect() } catch { /* noop — already disconnected */ }
+      sourceNodesRef.current.delete(slotIndex)
+    }
+    padVolumeRef.current.delete(slotIndex)
+    padOneShotRef.current.delete(slotIndex)
+    // Cancel any pending quantize start timer for this slot
+    const qTimer = quantizeTimersRef.current.get(slotIndex)
+    if (qTimer !== undefined) {
+      window.clearTimeout(qTimer)
+      quantizeTimersRef.current.delete(slotIndex)
+    }
     console.log('[audio] removed slot stopped', { slot: slotIndex })
     console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
   }, [clearAssignedDebugInterval])
@@ -1485,14 +1904,34 @@ function App() {
         return false
       }
 
+      // Store per-pad volume multiplier and playbackMode before creating the element
+      const packPad = packPadForGamePad(pad, AUDIO_PACKS[activePackId])
+      const padVol = packPad?.volume ?? 1.0
+      const isOneShot = packPad?.playbackMode === 'one-shot'
+      padVolumeRef.current.set(slotIndex, padVol)
+      padOneShotRef.current.set(slotIndex, isOneShot)
+
       const audio = new Audio(url)
-      audio.loop = true
+      audio.loop = !isOneShot
       audio.preload = 'auto'
       audio.volume = 0
       audio.onpause = () => console.log('[assigned] paused', slotIndex)
       audio.onended = () => console.log('[assigned] ended', slotIndex)
       audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
       assignedAudioRef.current.set(slotIndex, audio)
+
+      // Route through master compressor (safe — skipped if Web Audio unavailable)
+      try {
+        const ac = ensureAudioCtx()
+        if (ac) {
+          if (ac.ctx.state === 'suspended') void ac.ctx.resume()
+          const srcNode = ac.ctx.createMediaElementSource(audio)
+          srcNode.connect(ac.compressor)
+          sourceNodesRef.current.set(slotIndex, srcNode)
+        }
+      } catch (e) {
+        console.warn('[audio] compressor routing skipped', e)
+      }
 
       try {
         await waitForAssignedAudioReady(audio)
@@ -1511,23 +1950,89 @@ function App() {
         setAssignedBeatOneUrl(audio.src)
       }
 
+      // ── Dev-only loop timing validation ─────────────────────────────────
+      if (import.meta.env.DEV && !isOneShot && audio.duration > 0) {
+        validateLoopTiming(
+          `${pad.id} (slot ${slotIndex})`,
+          audio.duration,
+          packPad?.bpm ?? null,
+          packPad?.bars ?? null,
+        )
+      }
+
+      // ── Drift correction (architecture — disabled until allowDriftCorrection true) ─
+      if (packPad?.allowDriftCorrection && packPad.bpm && packPad.bars) {
+        const rate = computePlaybackRate(
+          audio.duration,
+          packPad.bpm,
+          packPad.bars,
+          true,
+        )
+        if (rate !== 1.0) {
+          audio.playbackRate = rate
+          console.log('[audio] drift correction applied', { slot: slotIndex, rate })
+        }
+      }
+
       console.log('[audio] assigned created', {
         slot: slotIndex,
         padId: pad.id,
         url: audio.src,
+        padVol,
+        isOneShot,
       })
 
       if (options?.deferPlayback) return true
 
-      if (masterCycleIntervalRef.current === null) {
+      if (masterCycleIntervalRef.current === null || !isPlayingRef.current) {
+        // No active session — start a fresh loop cycle
         startOrRestartLoops()
       } else {
-        console.log('[assigned] waiting for next master cycle', { slot: slotIndex })
+        // Session is running — schedule quantized start on next beat/bar boundary
+        const quantize = isReplayingMixRef.current
+          ? 'immediate'  // bypass quantization during replay to preserve timeline accuracy
+          : resolvePlaybackQuantization(packPad)
+        const delay = msUntilNextBoundary(musicalClockRef.current, quantize)
+
+        const playWithFade = () => {
+          if (!assignedAudioRef.current.has(slotIndex)) return
+          if (!isPlayingRef.current) return
+          startAssignedSlotAudio(slotIndex, audio, { fadeIn: true, forceRestart: true })
+          console.log('[audio] quantized play resolved', { slot: slotIndex, quantize, delay })
+        }
+
+        if (delay <= 20) {
+          playWithFade()
+        } else {
+          console.log('[audio] quantized start scheduled', { slot: slotIndex, quantize, delayMs: Math.round(delay) })
+          const tid = window.setTimeout(() => {
+            quantizeTimersRef.current.delete(slotIndex)
+            playWithFade()
+          }, delay)
+          quantizeTimersRef.current.set(slotIndex, tid)
+        }
       }
       return true
     },
-    [activePackId, disposeAssignedAudio, startOrRestartLoops],
+    [activePackId, disposeAssignedAudio, ensureAudioCtx, startOrRestartLoops, startAssignedSlotAudio],
   )
+
+  /**
+   * Resolve the playback quantization mode for a pack pad.
+   * Explicit pack config wins; falls back to sensible category defaults.
+   * One-shots always use 'immediate' unless explicitly overridden in pack config.
+   *
+   * WHERE TO CONFIGURE: set playbackQuantization on the pad in cyberpunkPack1.ts
+   * (or any other pack) to override these defaults.
+   *
+   * TO DISABLE GLOBALLY: change the default return to 'immediate'.
+   */
+  function resolvePlaybackQuantization(packPad: PackPadAudio | undefined): QuantizeMode {
+    if (packPad?.playbackQuantization) return packPad.playbackQuantization
+    if (packPad?.playbackMode === 'one-shot') return 'immediate'
+    if (packPad?.category === 'voice') return 'beat'
+    return 'bar'  // beats, bass, melody, atmosphere → bar-quantized
+  }
 
   const ensureAssignedAudioForSlots = useCallback(
     async (slotList: (string | null)[]) => {
@@ -1590,9 +2095,20 @@ function App() {
           mutedSlotsRef.current = next
           const audio = assignedAudioRef.current.get(index)
           if (audio) {
-            audio.muted = nowMuted
-            audio.volume = nowMuted || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
-            if (!nowMuted) console.log('[assigned] unmuted', { slot: index })
+            const isOneShot = padOneShotRef.current.get(index) ?? false
+            if (nowMuted) {
+              audio.volume = 0
+              // Keep loop pads running silently — preserves phase for gapless unmute
+              if (isOneShot) audio.pause()
+            } else if (!masterMutedRef.current) {
+              if (!isOneShot && isPlayingRef.current && audio.paused) {
+                void audio.play().catch((err) =>
+                  console.warn('[assigned] unmute resume failed', { slot: index, err }),
+                )
+              }
+              audio.volume = padEffVol(index)
+              console.log('[assigned] unmuted', { slot: index })
+            }
           }
           return next
         })
@@ -1600,7 +2116,7 @@ function App() {
         return
       }
     },
-    [slots, recordEvent],
+    [slots, recordEvent, padEffVol],
   )
 
   const handleDragEnd = useCallback(
@@ -1686,11 +2202,9 @@ function App() {
       }
     }
 
-    const restoredVolume = normalizedVolume(volumeRef.current)
     assignedAudioRef.current.forEach((audio, slot) => {
       const slotMuted = mutedSlotsRef.current.has(slot)
-      audio.volume =
-        masterMutedRef.current || slotMuted ? 0 : restoredVolume
+      audio.volume = masterMutedRef.current || slotMuted ? 0 : padEffVol(slot)
     })
 
     if (shareMix?.play && !shareMix.pause) {
@@ -1728,8 +2242,7 @@ function App() {
 
     assignedAudioRef.current.forEach((audio, slot) => {
       const slotMuted = mutedSlotsRef.current.has(slot)
-      audio.volume =
-        masterMutedRef.current || slotMuted ? 0 : normalizedVolume(volumeRef.current)
+      audio.volume = masterMutedRef.current || slotMuted ? 0 : padEffVol(slot)
     })
 
     setSharedMixAwaitingAudio(false)
@@ -1741,14 +2254,12 @@ function App() {
     const nextMuted = !masterMutedRef.current
     masterMutedRef.current = nextMuted
     setMasterMuted(nextMuted)
-    const restoredVolume = normalizedVolume(volumeRef.current)
     assignedAudioRef.current.forEach((audio, slot) => {
-      audio.volume = nextMuted || mutedSlotsRef.current.has(slot) ? 0 : restoredVolume
+      audio.volume = nextMuted || mutedSlotsRef.current.has(slot) ? 0 : padEffVol(slot)
     })
     setTransportStatus(nextMuted ? 'Paused' : (isPlayingRef.current ? 'Playing' : 'Stopped'))
     console.log(nextMuted ? '[pause] global mute' : '[pause] global unmute', {
       muted: nextMuted,
-      restoredVolume,
     })
     recordEvent({ tp: 'mm', mu: nextMuted })
   }, [recordEvent])
@@ -1948,7 +2459,16 @@ function App() {
             mutedSlotsRef.current = next
             const audio = assignedAudioRef.current.get(event.si!)
             if (audio) {
-              audio.volume = event.mu || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
+              const isOneShot = padOneShotRef.current.get(event.si!) ?? false
+              if (event.mu || masterMutedRef.current) {
+                audio.volume = 0
+                if (isOneShot) audio.pause()
+              } else {
+                if (!isOneShot && isPlayingRef.current && audio.paused) {
+                  void audio.play().catch(() => undefined)
+                }
+                audio.volume = padEffVol(event.si!)
+              }
             }
             return next
           })
@@ -1959,8 +2479,7 @@ function App() {
           masterMutedRef.current = event.mu
           setMasterMuted(event.mu)
           assignedAudioRef.current.forEach((audio, slot) => {
-            audio.volume =
-              event.mu || mutedSlotsRef.current.has(slot) ? 0 : normalizedVolume(volumeRef.current)
+            audio.volume = event.mu || mutedSlotsRef.current.has(slot) ? 0 : padEffVol(slot)
           })
           break
         }
@@ -2056,6 +2575,7 @@ function App() {
     isPlayingRef.current = false
     setIsPlaying(false)
     setTransportStatus('Stopped')
+    isReplayingMixRef.current = true
     setIsReplayingMix(true)
     setMixToast('Replaying mix from the start…')
 
@@ -2068,8 +2588,12 @@ function App() {
       const url = resolveAudioSrc(pad, initPack)
       if (!url) continue
       disposeAssignedAudio(i)
+      const replayPackPad = packPadForGamePad(pad, AUDIO_PACKS[initPack])
+      const replayIsOneShot = replayPackPad?.playbackMode === 'one-shot'
+      padVolumeRef.current.set(i, replayPackPad?.volume ?? 1.0)
+      padOneShotRef.current.set(i, replayIsOneShot)
       const audio = new Audio(url)
-      audio.loop = true
+      audio.loop = !replayIsOneShot
       audio.preload = 'auto'
       audio.volume = 0
       audio.onpause = () => console.log('[replay] audio paused', i)
@@ -2110,6 +2634,7 @@ function App() {
       isPlayingRef.current = false
       setIsPlaying(false)
       setTransportStatus('Stopped')
+      isReplayingMixRef.current = false
       setIsReplayingMix(false)
       setMixToast('Replay complete')
     }, dur > 0 ? dur : 1)   // dur=0 is fine — fires almost immediately
@@ -2186,37 +2711,12 @@ function App() {
         </motion.div>
       </header>
 
-      {/* CONTROL BAR — logo, menu, play, reset */}
+      {/* CONTROL BAR — logo, mix controls, transport */}
       <motion.div className="control-bar">
         <div className="control-bar__left">
           <h1 className="control-bar__logo">INCrediBOY</h1>
-          <button type="button" className="control-bar__menu" aria-label="Menu disabled" disabled>
-            <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
-              <rect y="0" width="22" height="2.5" rx="1" fill="#333" />
-              <rect y="6.5" width="22" height="2.5" rx="1" fill="#333" />
-              <rect y="13" width="22" height="2.5" rx="1" fill="#333" />
-            </svg>
-          </button>
         </div>
         <div className="control-bar__mixes">
-          <button
-            type="button"
-            className={`control-bar__mix control-bar__mix--play ${isPlaying ? 'control-bar__mix--playing' : ''}`}
-            disabled
-            hidden
-            aria-hidden="true"
-            aria-label={isPlaying ? 'Pause loop' : 'Play loop'}
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="9" y="2" width="6" height="10" rx="3" fill="#111" />
-              <path d="M12 2c-4 0-7 3-7 7v2h14V9c0-4-3-7-7-7z" fill="none" stroke="#111" strokeWidth="2" />
-              {isPlaying ? (
-                <path d="M8 14h3v8H8zm5 0h3v8h-3z" fill="#111" />
-              ) : (
-                <path d="M8 14h8v8H8z" fill="#111" />
-              )}
-            </svg>
-          </button>
           {/* ── Recording control: cycles through idle → recording → finalizing → saved ── */}
           {mixRecordingState === 'idle' && (
             <button
@@ -2384,6 +2884,14 @@ function App() {
           >
             {isPlaying ? 'RESTART LOOPS' : 'PLAY LOOPS'}
           </button>
+          <MixVisualizer isPlaying={isPlaying} beatPeriodMs={MASTER_BEAT_MS} />
+          {import.meta.env.DEV && isPlaying && (
+            <BeatDebugOverlay
+              clock={musicalClockRef.current}
+              queueSize={quantizeTimersRef.current.size}
+              bpm={bpm}
+            />
+          )}
         </div>
       </motion.div>
 
@@ -2434,26 +2942,71 @@ function App() {
             transition={{ delay: 0.1 }}
           >
             <footer className="pad-panel" aria-label="Sound library">
-              {[ROW_A, ROW_B].map((row, rowIndex) => (
-                <motion.div
-                  key={rowIndex}
-                  className="pad-panel__row"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.12 + rowIndex * 0.06 }}
-                >
-                  {row.map((pad) => (
-                    <SoundPad
-                      key={pad.id}
-                      pad={pad}
-                      selected={selectedPadId === pad.id}
-                      inUse={usedPadIds.has(pad.id)}
-                      isPerforming={performingPadIds.has(pad.id)}
-                      onSelect={handlePadSelect}
-                    />
+              {activePackId === 'cyberpunk-pack-1' ? (
+                /* ── Cyberpunk: 2-row grouped layout (matches default grid) ─ */
+                <div className="pad-panel__cp-rows">
+                  {CYBERPUNK_PAD_ROWS.map((row, ri) => (
+                    <motion.div
+                      key={ri}
+                      className="pad-panel__cp-row-wrap"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.1 + ri * 0.06 }}
+                    >
+                      {/* Grid row 1: group label chips */}
+                      {row.groups.map((g) => (
+                        <div
+                          key={g.label}
+                          className="pad-panel__cp-group-hdr"
+                          style={{
+                            '--cp-group-color': g.color,
+                            gridColumn: `span ${g.padIds.length}`,
+                          } as CSSProperties}
+                        >
+                          {g.label}
+                        </div>
+                      ))}
+                      {/* Grid row 2: pads (auto-placed by .sound-pad grid-row rule) */}
+                      {row.groups.flatMap((g) => g.padIds).map((padId) => {
+                        const pad = PAD_BY_ID[padId]
+                        if (!pad) return null
+                        return (
+                          <SoundPad
+                            key={pad.id}
+                            pad={pad}
+                            selected={selectedPadId === pad.id}
+                            inUse={usedPadIds.has(pad.id)}
+                            isPerforming={performingPadIds.has(pad.id)}
+                            onSelect={handlePadSelect}
+                          />
+                        )
+                      })}
+                    </motion.div>
                   ))}
-                </motion.div>
-              ))}
+                </div>
+              ) : (
+                /* ── Default: two-row layout ─────────────────────────────── */
+                [ROW_A, ROW_B].map((row, rowIndex) => (
+                  <motion.div
+                    key={rowIndex}
+                    className="pad-panel__row"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.12 + rowIndex * 0.06 }}
+                  >
+                    {row.map((pad) => (
+                      <SoundPad
+                        key={pad.id}
+                        pad={pad}
+                        selected={selectedPadId === pad.id}
+                        inUse={usedPadIds.has(pad.id)}
+                        isPerforming={performingPadIds.has(pad.id)}
+                        onSelect={handlePadSelect}
+                      />
+                    ))}
+                  </motion.div>
+                ))
+              )}
             </footer>
           </motion.div>
         </div>

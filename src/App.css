@@ -458,9 +458,10 @@
 /* ── White control strip ── */
 .control-bar {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  padding: 0 clamp(12px, 2vw, 24px);
+  column-gap: clamp(8px, 1.2vw, 16px);
+  padding: 0 clamp(10px, 1.8vw, 20px);
   background: var(--bar-bg);
   border-bottom: 1px solid #e5e5e5;
   z-index: 30;
@@ -470,72 +471,27 @@
   justify-self: start;
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  min-width: 0;
 }
 
 .control-bar__logo {
   margin: 0;
   font-weight: 900;
   font-style: italic;
-  font-size: clamp(1.35rem, 3.2vw, 2rem);
+  font-size: clamp(1.25rem, 2.8vw, 1.85rem);
   color: #000;
   letter-spacing: -0.04em;
   line-height: 1;
   white-space: nowrap;
 }
 
-.control-bar__menu {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  border: none;
-  background: #b5b5b5;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
 .control-bar__mixes {
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: clamp(5px, 0.5vw, 12px);
+  gap: clamp(5px, 0.5vw, 10px);
   flex-wrap: wrap;
   min-width: 0;
-}
-
-.control-bar__mix {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  border: none;
-  background: #b5b5b5;
-  cursor: pointer;
-  padding: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.control-bar__mix--play {
-  background: #d8d8d8;
-  box-shadow: inset 0 0 0 3px #9b4dca;
-}
-
-.control-bar__mix--playing {
-  box-shadow: inset 0 0 0 3px #9b4dca, 0 0 0 2px rgba(155, 77, 202, 0.35);
-}
-
-.control-bar__mix--play:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.control-bar__mix--locked {
-  opacity: 0.85;
-  cursor: not-allowed;
 }
 
 .control-bar__mix-share {
@@ -698,12 +654,14 @@
 }
 
 .control-bar__status {
+  flex-shrink: 0;
   min-width: 68px;
   color: var(--ink);
   font-size: 0.66rem;
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: center;
 }
 
 .control-bar__status--playing {
@@ -1145,19 +1103,20 @@
 .character-slot-wrap--filled:not(.character-slot-wrap--perform-fx)::before {
   content: '';
   position: absolute;
-  left: 12%;
-  right: 12%;
-  bottom: 6%;
-  height: 58%;
+  left: 10%;
+  right: 10%;
+  bottom: 4%;
+  height: 64%;
   z-index: 0;
   border-radius: 50% 50% 35% 35%;
   background: radial-gradient(
-    ellipse at 50% 100%,
+    ellipse at 50% 90%,
     var(--slot-pad-color, transparent) 0%,
-    transparent 72%
+    color-mix(in srgb, var(--slot-pad-color, transparent) 40%, transparent) 42%,
+    transparent 75%
   );
-  opacity: 0.22;
-  filter: blur(14px);
+  opacity: 0.28;
+  filter: blur(16px);
   pointer-events: none;
   transition: opacity 0.4s ease;
 }
@@ -1168,9 +1127,20 @@
   animation-delay: var(--perform-delay, 0ms);
 }
 
+/* ── Pad↔character connection: colored top-border pulse on performing slots ── */
+/* A thin colored line at the bottom of the character frame acts as the
+   visual bridge linking the pad button below to its character above.       */
+.character-slot-wrap--filled.character-slot-wrap--performing .character-slot__body {
+  border-bottom: 2px solid color-mix(in srgb, var(--slot-pad-color, transparent) 70%, transparent);
+  transition: border-color 0.25s ease;
+}
+
 /* Damp glow when muted */
 .character-slot-wrap--muted::before {
   opacity: 0 !important;
+}
+.character-slot-wrap--muted .character-slot__body {
+  border-bottom-color: transparent !important;
 }
 
 /* Ensure character figure renders above the glow */
@@ -1537,16 +1507,58 @@
 }
 
 @keyframes char-glow-pulse {
-  0%,
-  100% {
-    opacity: 0.18;
-    transform: scaleY(0.9) scaleX(0.95);
+  0%, 100% {
+    opacity: 0.22;
+    transform: scaleY(0.88) scaleX(0.94);
+    filter: blur(15px);
   }
-
   50% {
-    opacity: 0.48;
-    transform: scaleY(1.08) scaleX(1.04);
+    opacity: 0.58;
+    transform: scaleY(1.12) scaleX(1.06);
+    filter: blur(18px);
   }
+}
+
+/* ── Stage floor breathes with the bar (Part 4) ──────────────────────────── */
+@keyframes stage-floor-pulse {
+  0%, 100% { opacity: 0.82; transform: translateX(-50%) scaleX(0.97); }
+  50%       { opacity: 1;    transform: translateX(-50%) scaleX(1.04); }
+}
+.game-shell--playing .character-slots::before {
+  animation: stage-floor-pulse var(--bar-period, 2400ms) ease-in-out infinite;
+}
+
+/* ── Drop feedback keyframes (Part 3) ────────────────────────────────────── */
+/* Pop: spring-like scale bounce when a pad is assigned to a slot */
+@keyframes slot-pop {
+  0%   { transform: scale(0.84); }
+  55%  { transform: scale(1.07); }
+  75%  { transform: scale(0.97); }
+  100% { transform: scale(1);    }
+}
+/* Glow burst ring that expands and fades on assign */
+@keyframes slot-assign-ring {
+  0%   { opacity: 0.75; transform: scale(0.75); }
+  60%  { opacity: 0.35; transform: scale(1.4);  }
+  100% { opacity: 0;    transform: scale(1.75); }
+}
+/* Gentle shrink-fade when a character is removed */
+@keyframes slot-fade-out {
+  0%   { opacity: 1;   transform: scale(1);    }
+  100% { opacity: 0.4; transform: scale(0.92); }
+}
+
+/* Apply pop to the character body inside a just-assigned slot */
+.character-slot-wrap--just-assigned .character-slot__body {
+  animation: slot-pop 0.52s cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+}
+/* Expanding glow ring using ::before (share pseudo with glow, force brief override) */
+.character-slot-wrap--just-assigned::before {
+  animation: slot-assign-ring 0.42s ease-out both !important;
+}
+/* Remove animation on the body */
+.character-slot-wrap--just-removed .character-slot__body {
+  animation: slot-fade-out 0.32s ease-out both !important;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -1770,11 +1782,17 @@
 
   /* Disable pad pulse, recording pulse, and freeze beam for reduced-motion users */
   .sound-pad--performing,
-  .control-bar__rec-btn--recording {
+  .control-bar__rec-btn--recording,
+  .game-shell--playing .character-slots::before,
+  .character-slot-wrap--just-assigned .character-slot__body,
+  .character-slot-wrap--just-assigned::before,
+  .character-slot-wrap--just-removed .character-slot__body,
+  .mix-visualizer--active .mix-visualizer__bar {
     animation: none !important;
   }
 
-  .game-shell::before {
+  .game-shell::before,
+  .sound-pad {
     transition: none !important;
   }
 }
@@ -1820,6 +1838,55 @@
   gap: clamp(3px, 0.45vw, 7px);
   width: 100%;
   min-width: 0;
+}
+
+/* ── Cyberpunk 2-row grouped pad panel ────────────────────────────────────── */
+/* Outer column — stacks the two rows with the same vertical gap as the
+   default layout's row gap.                                                  */
+.pad-panel__cp-rows {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(3px, 0.6vh, 5px);
+  width: 100%;
+  min-width: 0;
+}
+
+/* Each row uses the SAME 12-column grid as .pad-panel__row so every pad
+   cell is identical in size to the default pack pads.
+   Grid row 1 = group-label chips (explicit grid-row: 1 set below).
+   Grid row 2 = pads (explicit grid-row: 2 via child selector below).        */
+.pad-panel__cp-row-wrap {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: clamp(3px, 0.45vw, 7px);
+  row-gap: clamp(2px, 0.35vh, 3px);
+  width: 100%;
+  min-width: 0;
+}
+
+/* Group label chips — occupy grid row 1 and span N pad-columns each         */
+.pad-panel__cp-group-hdr {
+  grid-row: 1;
+  display: flex;
+  align-items: flex-end;
+  font-size: clamp(6px, 0.52vw, 8px);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--cp-group-color, #aaa);
+  opacity: 0.88;
+  white-space: nowrap;
+  user-select: none;
+  line-height: 1;
+  padding-bottom: 2px;
+  border-bottom: 1.5px solid var(--cp-group-color, #aaa);
+  overflow: hidden;
+}
+
+/* Force all pads inside a cyberpunk row into grid row 2 so they align
+   precisely below their label chips (same column widths, same gaps).        */
+.pad-panel__cp-row-wrap .sound-pad {
+  grid-row: 2;
 }
 
 .sound-pad {
@@ -1897,31 +1964,60 @@
   opacity: 0.4;
 }
 
-/* ── Performing pad: bright, coloured, and beat-pulsing ── */
+/* ── Performing pad: bright, coloured, pulsing with the beat ── */
 .sound-pad--performing {
-  /* Override the grey dimming from sound-pad--in-use */
-  filter: brightness(1.08) !important;
-  /* Framer Motion controls opacity via inline style; we don't touch it here */
+  /* Restore full colour — overrides the --in-use grey */
+  filter: none !important;
+  opacity: 1 !important;
+  /* Colored glow ring using pad color */
+  box-shadow:
+    inset 0 -4px 0 var(--pad-color),
+    0 0 0 1.5px color-mix(in srgb, var(--pad-color) 85%, white),
+    0 0 10px color-mix(in srgb, var(--pad-color) 55%, transparent),
+    0 4px 14px rgba(0, 0, 0, 0.25) !important;
   animation: pad-beat-pulse var(--beat-period, 600ms) ease-in-out infinite;
-  will-change: transform, filter;
+  will-change: transform, box-shadow, filter;
+  transition:
+    box-shadow 0.18s ease,
+    filter 0.18s ease,
+    opacity 0.15s ease;
 }
 
 @keyframes pad-beat-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-    filter: brightness(1.04) drop-shadow(0 0 4px var(--pad-color, rgba(255, 255, 255, 0.3)));
+  0%, 100% {
+    transform: scale(1) translateY(0);
+    box-shadow:
+      inset 0 -4px 0 var(--pad-color),
+      0 0 0 1.5px color-mix(in srgb, var(--pad-color) 85%, white),
+      0 0 8px color-mix(in srgb, var(--pad-color) 45%, transparent),
+      0 4px 12px rgba(0, 0, 0, 0.22);
+    filter: brightness(1.05);
   }
-
   50% {
-    transform: scale(1.07) translateY(-2px);
-    filter: brightness(1.18) drop-shadow(0 0 11px var(--pad-color, rgba(255, 255, 255, 0.6)));
+    transform: scale(1.09) translateY(-3px);
+    box-shadow:
+      inset 0 -4px 0 var(--pad-color),
+      0 0 0 2.5px color-mix(in srgb, var(--pad-color) 95%, white),
+      0 0 20px color-mix(in srgb, var(--pad-color) 65%, transparent),
+      0 0 38px color-mix(in srgb, var(--pad-color) 22%, transparent),
+      0 6px 18px rgba(0, 0, 0, 0.30);
+    filter: brightness(1.25);
   }
 }
 
-/* ── Muted / paused in-use pads: slightly darker grey so performing pads pop ── */
+/* Smooth transition INTO performing state */
+.sound-pad {
+  transition:
+    opacity 0.22s ease,
+    filter 0.22s ease,
+    box-shadow 0.18s ease,
+    transform 0.14s ease;
+}
+
+/* ── Muted / inactive in-use pads: clearly dimmed so performing ones pop ── */
 .game-shell--playing .sound-pad--in-use:not(.sound-pad--performing) {
-  filter: grayscale(1) brightness(0.62) !important;
+  filter: grayscale(1) brightness(0.45) !important;
+  opacity: 0.55 !important;
 }
 
 .sound-pad__art {
@@ -1962,7 +2058,8 @@
   }
 
   .control-bar {
-    padding: 0 clamp(8px, 1.5vw, 16px);
+    padding: 0 clamp(8px, 1.2vw, 14px);
+    column-gap: clamp(6px, 1vw, 12px);
   }
 
   .audio-diagnostic-panel,
@@ -1978,8 +2075,8 @@
     flex-wrap: wrap;
     align-items: center;
     min-height: var(--bar-h);
-    padding: 3px clamp(8px, 1.5vw, 16px);
-    column-gap: clamp(6px, 0.8vw, 12px);
+    padding: 3px clamp(8px, 1.2vw, 14px);
+    column-gap: clamp(6px, 0.8vw, 10px);
     row-gap: 0;
   }
 
@@ -1989,7 +2086,7 @@
 
   .control-bar__mixes {
     flex: 1 1 auto;
-    justify-content: flex-end;
+    justify-content: center;
   }
 
   /* Transport drops to its own full-width second row */
@@ -2116,5 +2213,104 @@
     grid-column: 1 / -1;
     order: 2;
     flex-wrap: wrap;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   BEAT DEBUG OVERLAY — dev-only timing HUD (rendered only in DEV builds)
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.beat-debug-overlay {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #9bff70;
+  font-family: monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  flex-shrink: 0;
+  border: 1px solid rgba(155, 255, 112, 0.22);
+  white-space: nowrap;
+}
+
+.beat-debug-overlay__beat {
+  font-size: 0.7rem;
+  color: #fff;
+  transition: color 80ms step-start;
+}
+.beat-debug-overlay__beat--1 { color: #ffd36b; }
+.beat-debug-overlay__beat--2 { color: #fff; }
+.beat-debug-overlay__beat--3 { color: #ffd36b; }
+.beat-debug-overlay__beat--4 { color: #fff; }
+
+.beat-debug-overlay__queue {
+  color: #ff7070;
+  animation: beat-debug-blink 500ms step-start infinite;
+}
+
+@keyframes beat-debug-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MIX VISUALIZER — lightweight CSS-animated equalizer bars
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.mix-visualizer {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 20px;
+  padding: 0 3px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.mix-visualizer__bar {
+  width: 3px;
+  min-width: 3px;
+  height: 22%;
+  background: #888;
+  border-radius: 2px 2px 0 0;
+  flex-shrink: 0;
+  transform-origin: bottom center;
+  transition:
+    height 0.14s ease,
+    background 0.25s ease;
+}
+
+/* Bars light up with a warm accent when playing */
+.mix-visualizer--active .mix-visualizer__bar {
+  background: color-mix(in srgb, #ffd36b 85%, #fff);
+  /* Each bar gets a slightly different period — creates organic, non-uniform feel */
+  animation-name: vis-bar;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-delay: calc(var(--bar-i, 0) * 90ms);
+}
+
+/* Different durations per bar for organic feel */
+.mix-visualizer__bar:nth-child(1) { animation-duration: calc(var(--beat-period, 600ms) * 0.68); }
+.mix-visualizer__bar:nth-child(2) { animation-duration: calc(var(--beat-period, 600ms) * 0.85); }
+.mix-visualizer__bar:nth-child(3) { animation-duration: calc(var(--beat-period, 600ms) * 1.00); }
+.mix-visualizer__bar:nth-child(4) { animation-duration: calc(var(--beat-period, 600ms) * 0.82); }
+.mix-visualizer__bar:nth-child(5) { animation-duration: calc(var(--beat-period, 600ms) * 0.62); }
+.mix-visualizer__bar:nth-child(6) { animation-duration: calc(var(--beat-period, 600ms) * 0.91); }
+.mix-visualizer__bar:nth-child(7) { animation-duration: calc(var(--beat-period, 600ms) * 0.75); }
+
+@keyframes vis-bar {
+  0%, 100% {
+    height: 18%;
+    opacity: 0.7;
+  }
+  50% {
+    height: 88%;
+    opacity: 1;
   }
 }
