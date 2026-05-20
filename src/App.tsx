@@ -21,11 +21,14 @@ import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
 import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import {
-  buildShareUrl,
+  applyRecordedMixToUrl,
+  buildRecordedShareUrl,
   clearShareMixFromUrl,
   hasShareMixInUrl,
-  readMixFromLocation,
-  type MixPackId,
+  readAnyMixFromLocation,
+  type MixEvent,
+  type MixSnapshot,
+  type RecordedMix,
   type SavedMix,
 } from './mixShare'
 import { IntroScreen } from './IntroScreen'
@@ -77,6 +80,15 @@ type PadDefinition = {
 type SlotAssignment = PadDefinition | null
 
 type TransportStatus = 'Playing' | 'Paused' | 'Stopped'
+
+/** Four-phase recording state for the Save Mix workflow. */
+type MixRecordingState = 'idle' | 'recording' | 'finalizing' | 'saved'
+
+function formatRecordingTime(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60)
+  const s = totalSeconds % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
 
 type PreviewPlayers = {
   players: Partial<Record<string, Tone.Player>>
@@ -954,34 +966,39 @@ function transportFromMix(mix: SavedMix | null): TransportStatus {
   return mix.pause ? 'Paused' : 'Playing'
 }
 
-type BootResolution = { mode: 'clean' } | { mode: 'share'; mix: SavedMix }
+type BootResolution =
+  | { mode: 'clean' }
+  | { mode: 'share'; mix: SavedMix }
+  | { mode: 'recorded'; mix: RecordedMix }
 
 function resolveAppBoot(): BootResolution {
   const url = window.location.href
-  const hash = window.location.hash
-  const validMix = hasShareMixInUrl()
   console.log('[boot-debug] url', url)
-  console.log('[boot-debug] has valid mix', validMix)
 
-  if (!validMix) {
+  const decoded = readAnyMixFromLocation()
+
+  if (!decoded) {
     clearShareMixFromUrl()
     console.log('[boot] clean load no mix')
-    const emptySlots = Array(SLOT_COUNT).fill(null) as (string | null)[]
-    console.log('[boot-debug] initial slots', emptySlots)
+    console.log('[boot-debug] initial slots', Array(SLOT_COUNT).fill(null))
     return { mode: 'clean' }
   }
 
-  const mix = readMixFromLocation()
-  if (!mix) {
-    console.warn('[boot] hash present but decode failed', hash)
-    clearShareMixFromUrl()
-    console.log('[boot] clean load no mix')
-    const emptySlots = Array(SLOT_COUNT).fill(null) as (string | null)[]
-    console.log('[boot-debug] initial slots', emptySlots)
-    return { mode: 'clean' }
+  if (decoded.v === 2) {
+    const sanitizedSlots = decoded.init.slots.map((padId) =>
+      padId && PAD_BY_ID[padId] ? padId : null,
+    )
+    const mix: RecordedMix = { ...decoded, init: { ...decoded.init, slots: sanitizedSlots } }
+    console.log('[boot] recorded mix found', {
+      events: mix.ev.length,
+      durMs: mix.dur,
+      initSlots: mix.init.slots,
+    })
+    return { mode: 'recorded', mix }
   }
 
-  const sanitized = sanitizeMixSlots(mix)
+  // v:1 SavedMix
+  const sanitized = sanitizeMixSlots(decoded)
   console.log('[boot] share mix found')
   console.log('[boot] restored mix slots', sanitized.s)
   console.log('[boot-debug] initial slots', sanitized.s)
@@ -991,6 +1008,7 @@ function resolveAppBoot(): BootResolution {
 function App() {
   const bootRef = useRef<BootResolution>(resolveAppBoot())
   const isSharedMixLoad = bootRef.current.mode === 'share'
+  const isSharedRecordedMixLoad = bootRef.current.mode === 'recorded'
   const shareMix = bootRef.current.mode === 'share' ? bootRef.current.mix : null
 
   const [slots, setSlots] = useState<(string | null)[]>(() => Array(SLOT_COUNT).fill(null))
@@ -1006,6 +1024,17 @@ function App() {
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
   const [activePackId, setActivePackId] = useState<ActivePackId>('trance-curated-pack-1')
   const [mixToast, setMixToast] = useState<string | null>(null)
+  const [mixRecordingState, setMixRecordingState] = useState<MixRecordingState>('idle')
+  /** RecordedMix finalised from the user's own session (enables SHARE + REPLAY). */
+  const [savedRecordedMix, setSavedRecordedMix] = useState<RecordedMix | null>(null)
+  /** RecordedMix loaded from a shared URL — enables REPLAY MIX on boot. */
+  const [sharedRecordedMix, setSharedRecordedMix] = useState<RecordedMix | null>(
+    bootRef.current.mode === 'recorded' ? bootRef.current.mix : null,
+  )
+  /** True while a replay is in progress (timeline events are still scheduled). */
+  const [isReplayingMix, setIsReplayingMix] = useState(false)
+  const [recordingElapsed, setRecordingElapsed] = useState(0)
+  const recordingTimerRef = useRef<number | null>(null)
   const [stageEntered, setStageEntered] = useState(false)
   const [introExiting, setIntroExiting] = useState(false)
   const [sharedMixAwaitingAudio, setSharedMixAwaitingAudio] = useState(false)
@@ -1027,6 +1056,25 @@ function App() {
     players: {},
     dispose: () => undefined,
   })
+
+  // ── Timeline recording refs ────────────────────────────────────────────────
+  /** True while SAVE MIX recording is active. */
+  const isRecordingRef = useRef(false)
+  /** State captured the moment SAVE MIX is pressed. */
+  const recordingInitRef = useRef<MixSnapshot | null>(null)
+  /** Recording start timestamp (Date.now()). */
+  const recordingStartTimeRef = useRef<number | null>(null)
+  /** Accumulates all timeline events during a recording session. */
+  const timelineEventsRef = useRef<MixEvent[]>([])
+  /** setTimeout ids for scheduled replay events — cancelled on new replay. */
+  const replayTimeoutsRef = useRef<number[]>([])
+  /**
+   * Always-fresh event application function for replay.
+   * Updated by an unconditional useEffect so it always captures
+   * the latest React state via closure — avoids stale-closure issues
+   * with setTimeout-dispatched events.
+   */
+  const applyTimelineEventRef = useRef<(event: MixEvent) => Promise<void>>(async () => {})
 
   const applyCleanBootState = useCallback(() => {
     clearShareMixFromUrl()
@@ -1066,6 +1114,27 @@ function App() {
     setStageEntered(true)
   }, [])
 
+  /** Apply the initial state from a v:2 RecordedMix URL — skips intro, waits for REPLAY. */
+  const applyRecordedBootState = useCallback((mix: RecordedMix) => {
+    const { init } = mix
+    setSharedRecordedMix(mix)
+    volumeRef.current = init.vol
+    masterMutedRef.current = false
+    mutedSlotsRef.current = new Set(init.muted)
+    isPlayingRef.current = false
+    setActivePackId(init.pack as ActivePackId)
+    setVolume(init.vol)
+    setBpm(init.bpm)
+    setMasterMuted(false)
+    setMutedSlots(new Set(init.muted))
+    setIsPlaying(false)
+    setTransportStatus('Stopped')
+    setSlots([...init.slots])
+    setStageEntered(true)
+    setMixToast('Recorded mix loaded — press ▶ REPLAY MIX to play from the beginning')
+    console.log('[boot] recorded boot state applied', { initSlots: init.slots, events: mix.ev.length })
+  }, [])
+
   useLayoutEffect(() => {
     if (bootRef.current.mode === 'share') {
       applyShareBootState(bootRef.current.mix)
@@ -1073,11 +1142,17 @@ function App() {
       return
     }
 
+    if (bootRef.current.mode === 'recorded') {
+      applyRecordedBootState(bootRef.current.mix)
+      console.log('[boot-debug] final slots after boot (recorded init)', bootRef.current.mix.init.slots)
+      return
+    }
+
     console.log('[boot] forcing empty slots')
     applyCleanBootState()
     const emptySlots = Array(SLOT_COUNT).fill(null)
     console.log('[boot-debug] final slots after boot', emptySlots)
-  }, [applyCleanBootState, applyShareBootState])
+  }, [applyCleanBootState, applyRecordedBootState, applyShareBootState])
 
   const assignments = useMemo(
     () =>
@@ -1107,23 +1182,78 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [mixToast])
 
-  const buildCurrentMix = useCallback((): SavedMix => {
-    return {
-      v: 1,
-      p: activePackId as MixPackId,
-      s: [...slots],
-      m: [...mutedSlots].sort((a, b) => a - b),
-      vol: volume,
-      pause: masterMuted,
-      play: isPlaying,
+  // Recording elapsed-time counter — ticks every second while recording.
+  useEffect(() => {
+    if (mixRecordingState !== 'recording') {
+      if (recordingTimerRef.current !== null) {
+        window.clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+      return
     }
-  }, [activePackId, isPlaying, masterMuted, mutedSlots, slots, volume])
+    setRecordingElapsed(0)
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingElapsed((prev) => prev + 1)
+    }, 1000)
+    return () => {
+      if (recordingTimerRef.current !== null) {
+        window.clearInterval(recordingTimerRef.current)
+        recordingTimerRef.current = null
+      }
+    }
+  }, [mixRecordingState])
 
-  const handleSaveMix = useCallback(() => {
-    const mix = buildCurrentMix()
-    console.log('[mix] saved', mix)
-    setMixToast('Mix saved — use COPY SHARE LINK to share')
-  }, [buildCurrentMix])
+  /** Snapshot of the entire mix state at a point in time. */
+  const buildSnapshot = useCallback((): MixSnapshot => ({
+    pack: activePackId,
+    slots: [...slots],
+    muted: [...mutedSlots].sort((a, b) => a - b),
+    vol: volume,
+    bpm,
+    play: isPlaying,
+    pause: masterMuted,
+  }), [activePackId, bpm, isPlaying, masterMuted, mutedSlots, slots, volume])
+
+  /** Append a timestamped event to the recording timeline — no-op when not recording. */
+  const recordEvent = useCallback((event: Omit<MixEvent, 't'>) => {
+    if (!isRecordingRef.current || recordingStartTimeRef.current === null) return
+    const t = Date.now() - recordingStartTimeRef.current
+    timelineEventsRef.current.push({ t, ...event } as MixEvent)
+  }, [])
+
+  /** Start a new timeline recording session. */
+  const handleStartRecording = useCallback(() => {
+    const init = buildSnapshot()
+    recordingInitRef.current = init
+    recordingStartTimeRef.current = Date.now()
+    timelineEventsRef.current = []
+    isRecordingRef.current = true
+    setMixRecordingState('recording')
+    setRecordingElapsed(0)
+    setSavedRecordedMix(null)
+    console.log('[mix-record] recording started', { initSlots: init.slots })
+  }, [buildSnapshot])
+
+  /** Stop recording, finalise the RecordedMix, and write it to the URL. */
+  const handleStopRecording = useCallback(() => {
+    isRecordingRef.current = false
+    setMixRecordingState('finalizing')
+    const dur = recordingStartTimeRef.current !== null ? Date.now() - recordingStartTimeRef.current : 0
+    const init = recordingInitRef.current ?? buildSnapshot()
+    const events = [...timelineEventsRef.current]
+    console.log('[mix-record] recording stopped — finalizing', { events: events.length, dur })
+    window.setTimeout(() => {
+      const recordedMix: RecordedMix = { v: 2, at: recordingStartTimeRef.current ?? Date.now(), dur, init, ev: events }
+      setSavedRecordedMix(recordedMix)
+      applyRecordedMixToUrl(recordedMix)
+      setMixRecordingState('saved')
+      setMixToast('Mix recorded — press SHARE MIX to copy the link, or ▶ REPLAY MIX to replay')
+      console.log('[mix-record] mix finalized and written to URL', recordedMix)
+      recordingInitRef.current = null
+      recordingStartTimeRef.current = null
+      timelineEventsRef.current = []
+    }, 750)
+  }, [buildSnapshot])
 
   const handleEnterStage = useCallback(() => {
     setIntroExiting(true)
@@ -1138,9 +1268,10 @@ function App() {
   }, [applyCleanBootState])
 
   const handleCopyShareLink = useCallback(async () => {
-    const mix = buildCurrentMix()
-    console.log('[mix] saved for share', mix)
-    const shareUrl = buildShareUrl(mix)
+    const mixToShare = savedRecordedMix ?? sharedRecordedMix
+    if (!mixToShare) return
+    const shareUrl = buildRecordedShareUrl(mixToShare)
+    console.log('[mix] sharing recorded mix', { events: mixToShare.ev.length, dur: mixToShare.dur })
 
     try {
       if (navigator.clipboard?.writeText) {
@@ -1156,12 +1287,12 @@ function App() {
         document.execCommand('copy')
         document.body.removeChild(input)
       }
-      setMixToast('Mix link copied')
+      setMixToast('Mix link copied — share it to let others replay your mix!')
     } catch (error) {
       console.warn('[mix] clipboard copy failed', error)
-      setMixToast('Copy failed — use SAVE MIX')
+      setMixToast('Copy failed — try again')
     }
-  }, [buildCurrentMix])
+  }, [savedRecordedMix, sharedRecordedMix])
 
   const clearAssignedDebugInterval = useCallback((slotIndex: number) => {
     const interval = assignedDebugIntervalsRef.current.get(slotIndex)
@@ -1262,10 +1393,20 @@ function App() {
     console.log('[volume] updated', { value: volume, normalized })
   }, [volume])
 
+  /** Cancel all scheduled replay timeouts and mark replay as inactive. */
+  const clearReplayTimers = useCallback(() => {
+    replayTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
+    replayTimeoutsRef.current = []
+    setIsReplayingMix(false)
+  }, [])
+
   useEffect(() => {
     return () => {
       clearMasterCycle()
       clearAllAssignedDebugIntervals()
+      // Cancel replay events on unmount so stale timeouts can't fire
+      replayTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
+      replayTimeoutsRef.current = []
     }
   }, [clearAllAssignedDebugIntervals, clearMasterCycle])
 
@@ -1440,24 +1581,26 @@ function App() {
   const handleSlotClick = useCallback(
     async (index: number) => {
       if (slots[index]) {
+        const currentlyMuted = mutedSlotsRef.current.has(index)
+        const nowMuted = !currentlyMuted
         setMutedSlots((prev) => {
           const next = new Set(prev)
-          const muted = next.has(index)
-          if (muted) next.delete(index)
-          else next.add(index)
+          if (nowMuted) next.add(index)
+          else next.delete(index)
           mutedSlotsRef.current = next
           const audio = assignedAudioRef.current.get(index)
           if (audio) {
-            audio.muted = !muted
-            audio.volume = next.has(index) || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
-            if (muted) console.log('[assigned] unmuted', { slot: index })
+            audio.muted = nowMuted
+            audio.volume = nowMuted || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
+            if (!nowMuted) console.log('[assigned] unmuted', { slot: index })
           }
           return next
         })
+        recordEvent({ tp: 'sm', si: index, mu: nowMuted })
         return
       }
     },
-    [slots],
+    [slots, recordEvent],
   )
 
   const handleDragEnd = useCallback(
@@ -1474,8 +1617,9 @@ function App() {
       setAudioReady(true)
       setSelectedPadId(padId)
       await assignPadToSlot(padId, index)
+      recordEvent({ tp: 'sa', si: index, pid: padId })
     },
-    [assignPadToSlot, slots],
+    [assignPadToSlot, slots, recordEvent],
   )
 
   const removeFromSlot = useCallback((index: number) => {
@@ -1498,7 +1642,8 @@ function App() {
       mutedSlotsRef.current = next
       return next
     })
-  }, [clearMasterCycle, disposeAssignedAudio, slots])
+    recordEvent({ tp: 'sc', si: index })
+  }, [clearMasterCycle, disposeAssignedAudio, slots, recordEvent])
 
   useEffect(() => {
     if (!shareMix || !stageEntered || sharedMixHydratedRef.current) return
@@ -1589,7 +1734,8 @@ function App() {
 
     setSharedMixAwaitingAudio(false)
     startOrRestartLoops()
-  }, [ensureAssignedAudioForSlots, slots, startOrRestartLoops])
+    recordEvent({ tp: 'pl', pl: true })
+  }, [ensureAssignedAudioForSlots, slots, startOrRestartLoops, recordEvent])
 
   const toggleMasterMute = useCallback(() => {
     const nextMuted = !masterMutedRef.current
@@ -1604,10 +1750,13 @@ function App() {
       muted: nextMuted,
       restoredVolume,
     })
-  }, [])
+    recordEvent({ tp: 'mm', mu: nextMuted })
+  }, [recordEvent])
 
   const handleStopReset = useCallback(() => {
     console.log('[audio] reset stopping all')
+    // Cancel any in-progress replay first
+    clearReplayTimers()
     clearMasterCycle()
     clearAllAssignedDebugIntervals()
     assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
@@ -1622,7 +1771,8 @@ function App() {
     mutedSlotsRef.current = new Set()
     setMutedSlots(new Set())
     setSelectedPadId(null)
-  }, [clearAllAssignedDebugIntervals, clearMasterCycle])
+    recordEvent({ tp: 'pl', pl: false })
+  }, [clearAllAssignedDebugIntervals, clearMasterCycle, clearReplayTimers, recordEvent])
 
   const handlePackChange = useCallback(
     (packId: ActivePackId) => {
@@ -1630,9 +1780,24 @@ function App() {
       setActivePackId(packId)
       setDiagnosticNativeUrl('')
       setAssignedBeatOneUrl('')
+      recordEvent({ tp: 'pk', pack: packId })
     },
-    [handleStopReset],
+    [handleStopReset, recordEvent],
   )
+
+  /** Volume change handler — updates state and records a timeline event. */
+  const handleVolumeChange = useCallback((vol: number) => {
+    volumeRef.current = vol
+    setVolume(vol)
+    recordEvent({ tp: 'vo', vol })
+  }, [recordEvent])
+
+  /** BPM change handler — updates state and records a timeline event. */
+  const handleBpmChange = useCallback((rawBpm: number) => {
+    const clamped = Math.min(180, Math.max(60, rawBpm || DEFAULT_BPM))
+    setBpm(clamped)
+    recordEvent({ tp: 'bp', bpm: clamped })
+  }, [recordEvent])
 
   const handleTestNativeAudioLoop = useCallback(async () => {
     clearDiagnosticNativeTest()
@@ -1746,6 +1911,221 @@ function App() {
     console.log('[diagnostic] Tone stopped')
   }, [clearDiagnosticToneTest])
 
+  /**
+   * Keep applyTimelineEventRef.current up-to-date after every render so that
+   * scheduled replay timeouts always call the freshest version of the function,
+   * with the latest React state captured via closure.
+   * (No dependency array = runs unconditionally after every render.)
+   */
+  useEffect(() => {
+    applyTimelineEventRef.current = async (event: MixEvent) => {
+      switch (event.tp) {
+        case 'sa': {
+          if (event.pid === undefined || event.si === undefined) break
+          const pad = PAD_BY_ID[event.pid]
+          if (!pad) break
+          setSlots((prev) => {
+            const next = [...prev]
+            for (let i = 0; i < next.length; i++) {
+              if (next[i] === event.pid && i !== event.si) next[i] = null
+            }
+            next[event.si!] = event.pid!
+            return next
+          })
+          await createAssignedAudio(pad, event.si)
+          break
+        }
+        case 'sc': {
+          if (event.si !== undefined) removeFromSlot(event.si)
+          break
+        }
+        case 'sm': {
+          if (event.si === undefined || event.mu === undefined) break
+          setMutedSlots((prev) => {
+            const next = new Set(prev)
+            if (event.mu) next.add(event.si!)
+            else next.delete(event.si!)
+            mutedSlotsRef.current = next
+            const audio = assignedAudioRef.current.get(event.si!)
+            if (audio) {
+              audio.volume = event.mu || masterMutedRef.current ? 0 : normalizedVolume(volumeRef.current)
+            }
+            return next
+          })
+          break
+        }
+        case 'mm': {
+          if (event.mu === undefined) break
+          masterMutedRef.current = event.mu
+          setMasterMuted(event.mu)
+          assignedAudioRef.current.forEach((audio, slot) => {
+            audio.volume =
+              event.mu || mutedSlotsRef.current.has(slot) ? 0 : normalizedVolume(volumeRef.current)
+          })
+          break
+        }
+        case 'pl': {
+          if (event.pl) {
+            startOrRestartLoops()
+          } else {
+            clearMasterCycle()
+            isPlayingRef.current = false
+            setIsPlaying(false)
+            setTransportStatus('Stopped')
+            assignedAudioRef.current.forEach((audio) => { audio.volume = 0 })
+          }
+          break
+        }
+        case 'vo': {
+          if (event.vol !== undefined) {
+            volumeRef.current = event.vol
+            setVolume(event.vol)
+          }
+          break
+        }
+        case 'bp': {
+          if (event.bpm !== undefined) setBpm(event.bpm)
+          break
+        }
+        case 'pk': {
+          if (event.pack) handlePackChange(event.pack as ActivePackId)
+          break
+        }
+        default:
+          break
+      }
+    }
+  })
+
+  /**
+   * Immediately stop a replay in progress — stops audio, cancels all
+   * scheduled timeline events, but preserves the current visual slot state
+   * so the user can see where the recording left off.
+   */
+  const handleStopReplay = useCallback(() => {
+    console.log('[mix-replay] stopping replay')
+    clearReplayTimers()           // cancels all scheduled timeouts + sets isReplayingMix=false
+    clearMasterCycle()            // stops the audio loop cycle
+    clearAllAssignedDebugIntervals()
+    // Silence audio without destroying the elements (visual state preserved)
+    assignedAudioRef.current.forEach((audio) => {
+      audio.volume = 0
+      audio.pause()
+    })
+    isPlayingRef.current = false
+    setIsPlaying(false)
+    setTransportStatus('Stopped')
+    setMixToast('Replay stopped')
+  }, [clearReplayTimers, clearMasterCycle, clearAllAssignedDebugIntervals])
+
+  /** Reset to recorded init state and replay the full timeline, stopping exactly at dur. */
+  const handleReplayMix = useCallback(async () => {
+    const mix = savedRecordedMix ?? sharedRecordedMix
+    if (!mix) return
+
+    const { init, ev, dur } = mix
+    const initPack = init.pack as ActivePackId
+
+    // Guard against zero/invalid duration to avoid infinite playback
+    if (typeof dur !== 'number' || !Number.isFinite(dur) || dur < 0) {
+      console.warn('[mix-replay] invalid duration — aborting', dur)
+      return
+    }
+
+    console.log('[mix-replay] starting replay', { events: ev.length, dur })
+
+    // Cancel any existing replay
+    clearReplayTimers()
+
+    // ── 1. Stop all current audio ──────────────────────────────────────────
+    clearMasterCycle()
+    clearAllAssignedDebugIntervals()
+    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
+    assignedAudioRef.current.clear()
+
+    // ── 2. Apply initial mix state ─────────────────────────────────────────
+    masterMutedRef.current = init.pause
+    setMasterMuted(init.pause)
+    mutedSlotsRef.current = new Set(init.muted)
+    setMutedSlots(new Set(init.muted))
+    volumeRef.current = init.vol
+    setVolume(init.vol)
+    setBpm(init.bpm)
+    setActivePackId(initPack)
+    setSlots([...init.slots])
+    isPlayingRef.current = false
+    setIsPlaying(false)
+    setTransportStatus('Stopped')
+    setIsReplayingMix(true)
+    setMixToast('Replaying mix from the start…')
+
+    // ── 3. Load audio for initial slots using explicit pack (no stale closure) ─
+    for (let i = 0; i < init.slots.length; i++) {
+      const padId = init.slots[i]
+      if (!padId) continue
+      const pad = PAD_BY_ID[padId]
+      if (!pad) continue
+      const url = resolveAudioSrc(pad, initPack)
+      if (!url) continue
+      disposeAssignedAudio(i)
+      const audio = new Audio(url)
+      audio.loop = true
+      audio.preload = 'auto'
+      audio.volume = 0
+      audio.onpause = () => console.log('[replay] audio paused', i)
+      audio.onerror = (e) => console.warn('[replay] audio error', { slot: i, padId, e })
+      assignedAudioRef.current.set(i, audio)
+      try {
+        await waitForAssignedAudioReady(audio)
+        console.log('[replay] audio loaded', { slot: i, padId })
+      } catch {
+        console.warn('[replay] audio load failed', { slot: i, padId })
+        assignedAudioRef.current.delete(i)
+      }
+    }
+
+    // ── 4. Start playback if the recording began playing ───────────────────
+    if (init.play && !init.pause && assignedAudioRef.current.size > 0) {
+      startOrRestartLoops()
+    }
+
+    // ── 5. Schedule all timeline events ────────────────────────────────────
+    for (const event of ev) {
+      const id = window.setTimeout(() => {
+        void applyTimelineEventRef.current(event)
+      }, event.t)
+      replayTimeoutsRef.current.push(id)
+    }
+
+    // ── 6. Schedule the definitive end-of-recording stop ──────────────────
+    // This mirrors exactly what happened when the user pressed STOP SAVING.
+    const stopId = window.setTimeout(() => {
+      console.log('[mix-replay] auto-stop at dur', dur)
+      clearMasterCycle()
+      clearAllAssignedDebugIntervals()
+      assignedAudioRef.current.forEach((audio) => {
+        audio.volume = 0
+        audio.pause()
+      })
+      isPlayingRef.current = false
+      setIsPlaying(false)
+      setTransportStatus('Stopped')
+      setIsReplayingMix(false)
+      setMixToast('Replay complete')
+    }, dur > 0 ? dur : 1)   // dur=0 is fine — fires almost immediately
+    replayTimeoutsRef.current.push(stopId)
+
+    console.log('[mix-replay] scheduled', { events: ev.length, dur })
+  }, [
+    savedRecordedMix,
+    sharedRecordedMix,
+    clearReplayTimers,
+    clearMasterCycle,
+    clearAllAssignedDebugIntervals,
+    disposeAssignedAudio,
+    startOrRestartLoops,
+  ])
+
   const filledCount = slots.filter(Boolean).length
   const usedPadIds = useMemo(() => new Set(slots.filter(Boolean) as string[]), [slots])
   // Pads actively playing (assigned + not muted + not master-muted + isPlaying)
@@ -1772,13 +2152,13 @@ function App() {
               letterSpacing: '0.08em',
               padding: '2px 6px',
               borderRadius: '3px',
-              background: isSharedMixLoad ? '#7c3aed' : '#15803d',
+              background: isSharedMixLoad ? '#7c3aed' : isSharedRecordedMixLoad ? '#0369a1' : '#15803d',
               color: '#fff',
               marginLeft: '6px',
               verticalAlign: 'middle',
             }}
           >
-            {isSharedMixLoad ? 'SHARE BOOT' : 'CLEAN BOOT'}
+            {isSharedMixLoad ? 'SHARE BOOT' : isSharedRecordedMixLoad ? 'RECORDED BOOT' : 'CLEAN BOOT'}
           </span>
         </div>
         <nav className="top-nav__links" aria-label="Main">
@@ -1837,24 +2217,90 @@ function App() {
               )}
             </svg>
           </button>
-          <button
-            type="button"
-            className="control-bar__mix-share"
-            onClick={handleSaveMix}
-            aria-label="Save mix to URL"
-          >
-            SAVE MIX
-          </button>
-          <button
-            type="button"
-            className="control-bar__mix-share control-bar__mix-share--copy"
-            onClick={() => {
-              void handleCopyShareLink()
-            }}
-            aria-label="Copy share link"
-          >
-            COPY SHARE LINK
-          </button>
+          {/* ── Recording control: cycles through idle → recording → finalizing → saved ── */}
+          {mixRecordingState === 'idle' && (
+            <button
+              type="button"
+              className="control-bar__mix-share control-bar__rec-btn"
+              onClick={handleStartRecording}
+              aria-label="Start recording mix session"
+            >
+              SAVE MIX
+            </button>
+          )}
+          {mixRecordingState === 'recording' && (
+            <button
+              type="button"
+              className="control-bar__mix-share control-bar__rec-btn control-bar__rec-btn--recording"
+              onClick={handleStopRecording}
+              aria-label="Stop recording and save mix"
+            >
+              ● {formatRecordingTime(recordingElapsed)} STOP
+            </button>
+          )}
+          {mixRecordingState === 'finalizing' && (
+            <button
+              type="button"
+              className="control-bar__mix-share control-bar__rec-btn control-bar__rec-btn--finalizing"
+              disabled
+              aria-label="Saving mix…"
+            >
+              SAVING…
+            </button>
+          )}
+          {mixRecordingState === 'saved' && (
+            <button
+              type="button"
+              className="control-bar__mix-share control-bar__rec-btn control-bar__rec-btn--saved"
+              onClick={handleStartRecording}
+              aria-label="Mix saved — click to record again"
+            >
+              ✓ SAVED
+            </button>
+          )}
+
+          {/* ── Share Mix: disabled until a RecordedMix exists ── */}
+          {(() => {
+            const hasMix = Boolean(savedRecordedMix ?? sharedRecordedMix)
+            return (
+              <button
+                type="button"
+                className={[
+                  'control-bar__mix-share',
+                  'control-bar__mix-share--copy',
+                  hasMix ? 'control-bar__share-btn--ready' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={() => { void handleCopyShareLink() }}
+                disabled={!hasMix}
+                aria-label={hasMix ? 'Copy share link for recorded mix' : 'Record a mix first to share'}
+              >
+                SHARE MIX
+              </button>
+            )
+          })()}
+
+          {/* ── Replay Mix: toggles ▶ / ■ while replay is active ── */}
+          {(savedRecordedMix ?? sharedRecordedMix) && (
+            <button
+              type="button"
+              className={[
+                'control-bar__mix-share',
+                'control-bar__replay-btn',
+                isReplayingMix ? 'control-bar__replay-btn--active' : '',
+              ].filter(Boolean).join(' ')}
+              onClick={() => {
+                if (isReplayingMix) {
+                  handleStopReplay()
+                } else {
+                  void handleReplayMix()
+                }
+              }}
+              aria-label={isReplayingMix ? 'Stop replay' : 'Replay the recorded mix from the beginning'}
+            >
+              {isReplayingMix ? '■ STOP REPLAY' : '▶ REPLAY MIX'}
+            </button>
+          )}
+
           {isSharedMixLoad && sharedMixAwaitingAudio && filledCount > 0 && (
             <button
               type="button"
@@ -1897,7 +2343,7 @@ function App() {
               min="0"
               max="100"
               value={volume}
-              onChange={(e) => setVolume(Number(e.target.value))}
+              onChange={(e) => handleVolumeChange(Number(e.target.value))}
               aria-label="Volume"
             />
           </label>
@@ -1908,7 +2354,7 @@ function App() {
               min="60"
               max="180"
               value={bpm}
-              onChange={(e) => setBpm(Math.min(180, Math.max(60, Number(e.target.value) || DEFAULT_BPM)))}
+              onChange={(e) => handleBpmChange(Number(e.target.value))}
               aria-label="BPM"
             />
           </label>

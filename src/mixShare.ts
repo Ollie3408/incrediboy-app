@@ -1,5 +1,9 @@
 /** URL hash mix save/load — lightweight JSON + base64url. */
 
+// =============================================================================
+// V1 — SavedMix (snapshot only, legacy)
+// =============================================================================
+
 export const MIX_VERSION = 1 as const
 
 export const MIX_PACK_IDS = [
@@ -26,6 +30,59 @@ export type SavedMix = {
   /** Transport was playing */
   play: boolean
 }
+
+// =============================================================================
+// V2 — RecordedMix (full timeline)
+// =============================================================================
+
+/** State captured at a point in time (used as initial and derived states). */
+export type MixSnapshot = {
+  pack: string
+  slots: (string | null)[]
+  muted: number[]   // sorted slot indices
+  vol: number
+  bpm: number
+  play: boolean
+  pause: boolean    // masterMuted
+}
+
+/**
+ * Abbreviated event type codes — kept short so #mix= URLs stay compact.
+ *
+ * sa = slot-assign   sc = slot-clear    sm = slot-mute
+ * mm = master-mute   pl = playback      vo = volume
+ * bp = bpm           pk = pack-change
+ */
+export type MixEventType = 'sa' | 'sc' | 'sm' | 'mm' | 'pl' | 'vo' | 'bp' | 'pk'
+
+export type MixEvent = {
+  /** Milliseconds from recording start. */
+  t: number
+  tp: MixEventType
+  si?: number      // slot index  (sa, sc, sm)
+  pid?: string     // pad id      (sa)
+  mu?: boolean     // muted flag  (sm, mm)
+  pl?: boolean     // playing     (pl)
+  vol?: number     // volume 0–100 (vo)
+  bpm?: number     // bpm 60–180  (bp)
+  pack?: string    // pack id     (pk)
+}
+
+export type RecordedMix = {
+  v: 2
+  /** Date.now() when recording started. */
+  at: number
+  /** Total recording duration in ms. */
+  dur: number
+  /** Application state at the moment SAVE MIX was pressed. */
+  init: MixSnapshot
+  /** Ordered timeline of state-change events during the recording. */
+  ev: MixEvent[]
+}
+
+// =============================================================================
+// Shared utilities
+// =============================================================================
 
 const MIX_HASH_PREFIX = '#mix='
 const SLOT_COUNT = 7
@@ -84,41 +141,117 @@ function normalizeMuted(raw: unknown): number[] {
   return indices.sort((a, b) => a - b)
 }
 
-export function encodeMixHash(mix: SavedMix): string {
-  const payload = JSON.stringify(mix)
-  return `${MIX_HASH_PREFIX}${toBase64Url(payload)}`
+// =============================================================================
+// V1 encode / decode
+// =============================================================================
+
+function decodeSavedMixData(data: Record<string, unknown>): SavedMix | null {
+  if (data.v !== MIX_VERSION) return null
+  if (typeof data.p !== 'string' || !isMixPackId(data.p)) return null
+
+  const slots = normalizeSlots(data.s)
+  if (!slots) return null
+
+  return {
+    v: MIX_VERSION,
+    p: data.p,
+    s: slots,
+    m: normalizeMuted(data.m),
+    vol: clampVolume(Number(data.vol)),
+    pause: Boolean(data.pause),
+    play: Boolean(data.play),
+  }
 }
 
+/** @deprecated Use readAnyMixFromLocation instead — kept for boot backward compat. */
 export function decodeMixFromHash(hash: string): SavedMix | null {
   if (!hash.startsWith(MIX_HASH_PREFIX)) return null
-
   const encoded = hash.slice(MIX_HASH_PREFIX.length).trim()
   if (!encoded) return null
-
   try {
     const json = fromBase64Url(encoded)
     const data = JSON.parse(json) as Record<string, unknown>
-    if (data.v !== MIX_VERSION) return null
-    if (typeof data.p !== 'string' || !isMixPackId(data.p)) return null
-
-    const slots = normalizeSlots(data.s)
-    if (!slots) return null
-
-    return {
-      v: MIX_VERSION,
-      p: data.p,
-      s: slots,
-      m: normalizeMuted(data.m),
-      vol: clampVolume(Number(data.vol)),
-      pause: Boolean(data.pause),
-      play: Boolean(data.play),
-    }
+    return decodeSavedMixData(data)
   } catch {
     return null
   }
 }
 
-/** True only when the URL contains a decodable #mix= share payload. */
+// =============================================================================
+// V2 encode / decode
+// =============================================================================
+
+function decodeRecordedMixData(data: Record<string, unknown>): RecordedMix | null {
+  if (data.v !== 2) return null
+  if (typeof data.at !== 'number' || typeof data.dur !== 'number') return null
+
+  const rawInit = data.init as Record<string, unknown> | undefined
+  if (!rawInit || typeof rawInit !== 'object') return null
+
+  const slots = normalizeSlots(rawInit.slots)
+  if (!slots) return null
+
+  const init: MixSnapshot = {
+    pack: typeof rawInit.pack === 'string' ? rawInit.pack : '',
+    slots,
+    muted: normalizeMuted(rawInit.muted),
+    vol: clampVolume(Number(rawInit.vol)),
+    bpm: typeof rawInit.bpm === 'number' ? Math.min(180, Math.max(60, rawInit.bpm)) : 100,
+    play: Boolean(rawInit.play),
+    pause: Boolean(rawInit.pause),
+  }
+
+  const ev: MixEvent[] = Array.isArray(data.ev)
+    ? (data.ev as MixEvent[]).filter(
+        (e) => e && typeof e.t === 'number' && typeof e.tp === 'string',
+      )
+    : []
+
+  return { v: 2, at: Number(data.at), dur: Number(data.dur), init, ev }
+}
+
+// =============================================================================
+// Unified decode — returns either version
+// =============================================================================
+
+function decodeAnyFromHash(hash: string): SavedMix | RecordedMix | null {
+  if (!hash.startsWith(MIX_HASH_PREFIX)) return null
+  const encoded = hash.slice(MIX_HASH_PREFIX.length).trim()
+  if (!encoded) return null
+  try {
+    const json = fromBase64Url(encoded)
+    const data = JSON.parse(json) as Record<string, unknown>
+    if (data.v === 2) return decodeRecordedMixData(data)
+    return decodeSavedMixData(data)
+  } catch {
+    return null
+  }
+}
+
+/** Decode any mix (v:1 or v:2) from the current URL hash.
+ *  Returns null if the hash is absent, malformed, or from an unknown version. */
+export function readAnyMixFromLocation(): SavedMix | RecordedMix | null {
+  const result = decodeAnyFromHash(window.location.hash)
+  if (!result) {
+    if (window.location.hash.startsWith('#mix')) {
+      console.warn('[mix] invalid or unrecognised mix link')
+      clearShareMixFromUrl()
+    }
+    return null
+  }
+  return result
+}
+
+// =============================================================================
+// URL building — kept for legacy v:1 compat
+// =============================================================================
+
+export function encodeMixHash(mix: SavedMix): string {
+  const payload = JSON.stringify(mix)
+  return `${MIX_HASH_PREFIX}${toBase64Url(payload)}`
+}
+
+/** True only when the URL contains a decodable #mix= share payload (v:1). */
 export function hasShareMixInUrl(): boolean {
   return decodeMixFromHash(window.location.hash) !== null
 }
@@ -148,5 +281,23 @@ export function buildShareUrl(mix: SavedMix): string {
 
 export function applyMixToUrl(mix: SavedMix): void {
   const hash = encodeMixHash(mix)
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`)
+}
+
+// =============================================================================
+// URL building — v:2 RecordedMix
+// =============================================================================
+
+function encodeRecordedMixHash(mix: RecordedMix): string {
+  return `${MIX_HASH_PREFIX}${toBase64Url(JSON.stringify(mix))}`
+}
+
+export function buildRecordedShareUrl(mix: RecordedMix): string {
+  const hash = encodeRecordedMixHash(mix)
+  return `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`
+}
+
+export function applyRecordedMixToUrl(mix: RecordedMix): void {
+  const hash = encodeRecordedMixHash(mix)
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`)
 }

@@ -579,6 +579,103 @@
   border-color: #111;
 }
 
+/* ── Recording button states ── */
+
+/* Base rec-btn: same sizing as mix-share, no extra styles needed at idle */
+.control-bar__rec-btn {
+  /* inherits .control-bar__mix-share — idle state looks like a plain SAVE MIX button */
+}
+
+/* Recording: red border + subtle pulsing glow */
+.control-bar__rec-btn--recording {
+  background: #fff0f0;
+  border-color: #dc2626;
+  color: #dc2626;
+  animation: record-pulse 1s ease-in-out infinite;
+}
+
+.control-bar__rec-btn--recording:hover {
+  background: #fee2e2;
+  border-color: #b91c1c;
+}
+
+@keyframes record-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.25);
+  }
+
+  50% {
+    box-shadow: 0 0 0 5px rgba(220, 38, 38, 0.1);
+  }
+}
+
+/* Finalizing: muted grey, not clickable */
+.control-bar__rec-btn--finalizing {
+  background: #f5f5f5;
+  border-color: #aaa;
+  color: #aaa;
+  cursor: not-allowed;
+}
+
+/* Saved: green confirmation */
+.control-bar__rec-btn--saved {
+  background: #f0fdf4;
+  border-color: #16a34a;
+  color: #16a34a;
+}
+
+.control-bar__rec-btn--saved:hover {
+  background: #dcfce7;
+  border-color: #15803d;
+}
+
+/* ── Replay Mix button: teal accent, always visible when a mix is available ── */
+.control-bar__replay-btn {
+  background: #f0fdfa;
+  border-color: #0d9488;
+  color: #0d9488;
+}
+
+.control-bar__replay-btn:hover {
+  background: #ccfbf1;
+  border-color: #0f766e;
+  color: #0f766e;
+}
+
+.control-bar__replay-btn--active {
+  background: #fff0f0;
+  border-color: #dc2626;
+  color: #dc2626;
+}
+
+.control-bar__replay-btn--active:hover {
+  background: #fde8e8;
+  border-color: #b91c1c;
+  color: #b91c1c;
+}
+
+/* ── Share Mix button: lit only after a saved mix exists ── */
+.control-bar__share-btn--ready {
+  background: #e8f7ff;
+  border-color: #2b7ccc;
+  color: #2b7ccc;
+}
+
+.control-bar__share-btn--ready:hover {
+  background: #d0eeff;
+  border-color: #1a5fa8;
+  color: #1a5fa8;
+}
+
+/* Disabled share button looks clearly unavailable */
+.control-bar__mix-share:disabled,
+.control-bar__rec-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .mix-toast {
   position: fixed;
   left: 50%;
@@ -1671,8 +1768,9 @@
     animation: none !important;
   }
 
-  /* Disable pad pulse and freeze beam opacity for reduced-motion users */
-  .sound-pad--performing {
+  /* Disable pad pulse, recording pulse, and freeze beam for reduced-motion users */
+  .sound-pad--performing,
+  .control-bar__rec-btn--recording {
     animation: none !important;
   }
 
