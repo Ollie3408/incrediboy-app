@@ -36,6 +36,7 @@ import {
   copyFileSync,
   readdirSync,
   statSync,
+  rmSync,
 } from 'node:fs'
 import { join, basename, extname, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
@@ -1198,6 +1199,436 @@ async function commandRegister(args) {
   console.log('\nRun: npm run build  to verify')
 }
 
+// ─── PREVIEW COMMANDS ────────────────────────────────────────────────────────
+/**
+ * Shared preview copy. Copies each recommended candidate with numbered filenames.
+ * Does NOT touch public/audio/, App.tsx, pack configs, or approved status.
+ */
+function runPreviewCopy(selFile, previewDir, { title = 'PREVIEW' } = {}) {
+  if (!selFile) {
+    console.error('No selection file found. Pass --selection <file> or run pack:scan first.')
+    process.exit(1)
+  }
+
+  console.log(`=== IncrediBoy Pack Builder — ${title} ===\n`)
+  console.log(`Selection: ${selFile}`)
+
+  const sel = JSON.parse(readFileSync(selFile, 'utf8'))
+  mkdirSync(previewDir, { recursive: true })
+
+  const copied = []
+  const skipped = []
+  let order = 1
+
+  for (const pad of sel.pads) {
+    if (!pad.sourcePath) {
+      skipped.push({ pad, reason: 'no sourcePath (needsSource)' })
+      continue
+    }
+    if (!existsSync(pad.sourcePath)) {
+      skipped.push({ pad, reason: `file not found: ${pad.sourcePath}` })
+      continue
+    }
+
+    const ext = extname(pad.sourcePath).toLowerCase()
+    const origName = basename(pad.sourcePath, ext)
+    const safe = toSafeFilename(origName)
+    const num = String(order).padStart(2, '0')
+    const destName = `${num}-${pad.category}-${toSafeFilename(pad.role)}-${safe}${ext}`
+    const dest = join(previewDir, destName)
+
+    copyFileSync(pad.sourcePath, dest)
+    console.log(`  ✓ ${destName}`)
+    copied.push({ order, pad, destName, destPath: dest })
+    order++
+  }
+
+  const readmePath = join(previewDir, 'README.md')
+  writeFileSync(
+    readmePath,
+    renderPreviewReadme(sel, copied, skipped, selFile, previewDir),
+    'utf8',
+  )
+  console.log('\n✓ README.md written')
+  console.log(`\nPreview folder: ${previewDir}`)
+  console.log(`  ${copied.length} files copied, ${skipped.length} skipped`)
+  console.log('\nApproval status is UNCHANGED. Edit the JSON and set approved:true when ready.')
+
+  return { sel, copied, skipped, previewDir }
+}
+
+/** Project reports/ preview (for in-repo review). */
+async function commandPreview(args) {
+  const selFile = resolveLatestSelection(args['--selection'])
+  runPreviewCopy(selFile, join(ROOT, 'reports', 'recommended-audio-preview'))
+}
+
+/** Finder-friendly preview in ~/Documents/new-pack-alpha/recommended-audio-preview/ */
+async function commandPreviewDocuments(args) {
+  const selFile = resolveLatestSelection(args['--selection'])
+  const outDir = args['--out']
+    ? resolve(args['--out'])
+    : join(homedir(), 'Documents', 'new-pack-alpha', 'recommended-audio-preview')
+  runDocumentsPreviewExport(selFile, outDir)
+}
+
+/** Category subfolder names for Documents listening pack. */
+const PREVIEW_CATEGORY_FOLDERS = {
+  beat: 'beats',
+  bass: 'bass',
+  melody: 'melody',
+  atmosphere: 'atmospheres',
+  voice: 'vocals',
+  fx: 'fx',
+  transition: 'transitions',
+}
+
+const PREVIEW_CATEGORY_SINGULAR = {
+  beat: 'beat',
+  bass: 'bass',
+  melody: 'melody',
+  atmosphere: 'atmosphere',
+  voice: 'vocal',
+  fx: 'fx',
+  transition: 'transition',
+}
+
+/** Listening order: beats → bass → melody → atmosphere → vocals → fx → transitions */
+const PREVIEW_CATEGORY_ORDER = [
+  'beat',
+  'bass',
+  'melody',
+  'atmosphere',
+  'voice',
+  'fx',
+  'transition',
+]
+
+/** Minimum curated stems for a playable 16-pad core (+ optional transitions). */
+const PREVIEW_CORE_TARGETS = {
+  beat: 4,
+  bass: 3,
+  melody: 3,
+  atmosphere: 2,
+  voice: 2,
+  fx: 2,
+}
+
+const PREVIEW_GRID_TOTAL = 24
+
+/** Wipe preview folder and recreate category subfolders. */
+function resetPreviewDirectory(previewDir) {
+  if (existsSync(previewDir)) {
+    rmSync(previewDir, { recursive: true, force: true })
+  }
+  mkdirSync(previewDir, { recursive: true })
+  for (const folder of Object.values(PREVIEW_CATEGORY_FOLDERS)) {
+    mkdirSync(join(previewDir, folder), { recursive: true })
+  }
+}
+
+/** Strip Looperman IDs; produce a short listening slug from pad label or role. */
+function labelToListeningSlug(label, role) {
+  let s = String(label ?? '')
+    .replace(/^looperman[\s-]*(l[\s-]*)?\d+[\s-]*\d*[\s-]*/i, '')
+    .replace(/^looperman[\s-]*/i, '')
+    .trim()
+  s = toSafeFilename(s)
+  if (!s || s.length < 2) {
+    s = toSafeFilename(role.replace(/-\d+$/, ''))
+  }
+  return s.slice(0, 45)
+}
+
+/**
+ * Documents export: category subfolders, global listening order, clean filenames.
+ * Example: beats/01-beat-tlt-style-hype-drums.wav
+ */
+function runDocumentsPreviewExport(selFile, previewDir) {
+  if (!selFile) {
+    console.error('No selection file found. Pass --selection <file> or run pack:scan first.')
+    process.exit(1)
+  }
+
+  console.log('=== IncrediBoy Pack Builder — LISTENING PACK EXPORT ===\n')
+  console.log(`Selection: ${selFile}`)
+
+  const sel = JSON.parse(readFileSync(selFile, 'utf8'))
+  resetPreviewDirectory(previewDir)
+
+  const skipped = []
+  const padsWithSource = []
+  const padsMissing = []
+
+  for (const pad of sel.pads) {
+    if (!pad.sourcePath) {
+      skipped.push({ pad, reason: 'no sourcePath (needsSource)' })
+      padsMissing.push(pad)
+      continue
+    }
+    if (!existsSync(pad.sourcePath)) {
+      skipped.push({ pad, reason: `file not found: ${pad.sourcePath}` })
+      padsMissing.push(pad)
+      continue
+    }
+    padsWithSource.push(pad)
+  }
+
+  // Sort by category group, then slot index within group
+  const categoryRank = Object.fromEntries(PREVIEW_CATEGORY_ORDER.map((c, i) => [c, i]))
+  padsWithSource.sort((a, b) => {
+    const ca = categoryRank[a.category] ?? 99
+    const cb = categoryRank[b.category] ?? 99
+    if (ca !== cb) return ca - cb
+    return (a.slot ?? 0) - (b.slot ?? 0)
+  })
+
+  const copied = []
+  let order = 1
+  const usedNames = new Set()
+
+  for (const pad of padsWithSource) {
+    const ext = extname(pad.sourcePath).toLowerCase()
+    const catSingular = PREVIEW_CATEGORY_SINGULAR[pad.category] ?? pad.category
+    const slug = labelToListeningSlug(pad.label, pad.role)
+    const num = String(order).padStart(2, '0')
+    let baseName = `${num}-${catSingular}-${slug}`
+    let destName = `${baseName}${ext}`
+    let folder = PREVIEW_CATEGORY_FOLDERS[pad.category] ?? pad.category
+    let relPath = `${folder}/${destName}`
+
+    // Avoid collisions within export
+    let suffix = 2
+    while (usedNames.has(relPath)) {
+      destName = `${baseName}-${suffix}${ext}`
+      relPath = `${folder}/${destName}`
+      suffix++
+    }
+    usedNames.add(relPath)
+
+    const dest = join(previewDir, folder, destName)
+    copyFileSync(pad.sourcePath, dest)
+    console.log(`  ✓ ${relPath}`)
+    copied.push({
+      order,
+      pad,
+      destName,
+      relPath,
+      destPath: dest,
+      originalFilename: basename(pad.sourcePath),
+    })
+    order++
+  }
+
+  const readmePath = join(previewDir, 'README.md')
+  writeFileSync(
+    readmePath,
+    renderDocumentsPreviewReadme(sel, copied, skipped, selFile, previewDir),
+    'utf8',
+  )
+  console.log('\n✓ README.md written')
+
+  printDocumentsExportSummary(sel, copied, skipped, padsMissing, previewDir)
+
+  return { sel, copied, skipped, previewDir }
+}
+
+function printDocumentsExportSummary(sel, copied, skipped, padsMissing, previewDir) {
+  const withSource = sel.pads.filter((p) => p.sourcePath && existsSync(p.sourcePath)).length
+  const total = sel.pads.length
+
+  console.log('\n══════════════════════════════════════════════════════')
+  console.log('EXPORT SUMMARY')
+  console.log('══════════════════════════════════════════════════════')
+  console.log(`Preview folder: ${previewDir}`)
+  console.log(`Files copied:   ${copied.length}`)
+  console.log(`Missing/rejected: ${skipped.length}`)
+  console.log(`Grid coverage:  ${withSource}/${total} pads have audio sources`)
+
+  console.log('\nBy category (have / need for 16-pad core):')
+  for (const cat of PREVIEW_CATEGORY_ORDER) {
+    const padsInCat = sel.pads.filter((p) => p.category === cat)
+    const have = padsInCat.filter((p) => p.sourcePath && existsSync(p.sourcePath)).length
+    const need = PREVIEW_CORE_TARGETS[cat]
+    if (need != null) {
+      const ok = have >= need ? '✓' : '✗'
+      console.log(`  ${ok} ${cat.padEnd(12)} ${have}/${padsInCat.length} selected (${need} required for core)`)
+    } else if (padsInCat.length > 0) {
+      console.log(`    ${cat.padEnd(12)} ${have}/${padsInCat.length} selected (optional)`)
+    }
+  }
+
+  const coreHave = PREVIEW_CATEGORY_ORDER.reduce((sum, cat) => {
+    const need = PREVIEW_CORE_TARGETS[cat]
+    if (need == null) return sum
+    const have = sel.pads
+      .filter((p) => p.category === cat && p.sourcePath && existsSync(p.sourcePath))
+      .length
+    return sum + Math.min(have, need)
+  }, 0)
+  const coreNeed = Object.values(PREVIEW_CORE_TARGETS).reduce((a, b) => a + b, 0)
+
+  const readyCore = coreHave >= coreNeed
+  const readyGrid = withSource >= PREVIEW_GRID_TOTAL
+
+  console.log('\nCurated audio readiness:')
+  console.log(`  16-pad core: ${coreHave}/${coreNeed} — ${readyCore ? 'READY' : 'NOT ENOUGH (add/replace sources in selection JSON)'}`)
+  console.log(`  24-pad grid: ${withSource}/${PREVIEW_GRID_TOTAL} — ${readyGrid ? 'READY' : 'NOT ENOUGH (FX/transitions/aux slots still need sources)'}`)
+
+  if (skipped.length > 0) {
+    console.log('\nMissing / rejected pads:')
+    for (const { pad, reason } of skipped) {
+      console.log(`  ✗ ${pad.role.padEnd(14)} (${pad.category}) — ${reason}`)
+    }
+  }
+
+  console.log('\nApproval status is UNCHANGED.')
+  console.log('Listen in Finder, edit selection JSON if needed, then set approved:true before pack:build.')
+  console.log('══════════════════════════════════════════════════════\n')
+}
+
+function renderDocumentsPreviewReadme(sel, copied, skipped, selFile, previewDir) {
+  const rows = copied.map(({ order, pad, relPath, originalFilename }) => {
+    const bpm = pad.bpm != null ? String(pad.bpm) : '—'
+    const key = pad.key != null ? pad.key : '—'
+    const mix = pad.mixabilityScore ?? pad.score ?? '—'
+    return `| ${String(order).padStart(2)} | \`${pad.padId}\` | ${pad.category} | \`${originalFilename}\` | \`${relPath}\` | ${bpm} | ${key} | ${mix} |`
+  })
+
+  const skippedRows = skipped.map(({ pad, reason }) =>
+    `| \`${pad.role}\` | \`${pad.padId}\` | ${pad.category} | ${reason} |`,
+  )
+
+  const selBasename = basename(selFile)
+  const withSource = sel.pads.filter((p) => p.sourcePath && existsSync(p.sourcePath)).length
+
+  return `# Recommended Listening Pack
+
+Pack: **${sel.packName}** (\`${sel.packId}\`)
+Export folder: \`${previewDir}\`
+Selection: \`${selBasename}\`
+Spine: BPM ${sel.spineAnalysis?.suggestedBpm ?? '?'} · Key ${sel.spineAnalysis?.suggestedKey ?? '?'}
+Approved: **${sel.approved ? 'YES' : 'NO — listening preview only'}**
+Files exported: ${copied.length} · Missing: ${skipped.length} · Grid coverage: ${withSource}/24
+
+> Open subfolders in Finder to listen. This export does not modify the game or pack configs.
+
+## Folder layout
+
+\`\`\`
+recommended-audio-preview/
+├── beats/
+├── bass/
+├── melody/
+├── atmospheres/
+├── vocals/
+├── fx/
+├── transitions/
+└── README.md
+\`\`\`
+
+## Files (listening order)
+
+| # | Pad ID | Category | Original filename | Copied file | BPM | Key | Mix score |
+|---|--------|----------|-------------------|-------------|-----|-----|-----------|
+${rows.join('\n')}
+
+## Missing / not exported
+
+| Role | Pad ID | Category | Reason |
+|------|--------|----------|--------|
+${skippedRows.length ? skippedRows.join('\n') : '_(none)_'}
+
+## Next steps
+
+1. Listen to every exported file above.
+2. Replace weak sounds in \`reports/${selBasename}\` (edit \`sourcePath\` per pad).
+3. Re-run: \`npm run pack:preview-documents\`
+4. When satisfied, set \`approved: true\` and run \`npm run pack:build\`.
+`
+}
+
+/** Convert a string to a safe filename fragment (lowercase, hyphens only). */
+function toSafeFilename(str) {
+  return str
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60)
+}
+
+/** Return the latest pack-selection JSON from reports/, or the explicit path. */
+function resolveLatestSelection(explicit) {
+  if (explicit) {
+    const p = resolve(explicit)
+    return existsSync(p) ? p : null
+  }
+  let entries
+  try {
+    entries = readdirSync(REPORTS_DIR)
+      .filter((f) => f.startsWith('pack-selection-') && f.endsWith('.json'))
+      .sort()
+  } catch {
+    return null
+  }
+  if (entries.length === 0) return null
+  return join(REPORTS_DIR, entries[entries.length - 1])
+}
+
+function renderPreviewReadme(sel, copied, skipped, selFile, previewDir) {
+  const rows = copied.map(({ order, pad, destName }) => {
+    const bpm = pad.bpm != null ? String(pad.bpm) : '—'
+    const key = pad.key != null ? pad.key : '—'
+    const scr = pad.score != null ? String(pad.score) : '—'
+    const src = pad.sourcePath ?? '—'
+    return `| ${String(order).padStart(2)} | \`${pad.padId}\` | ${pad.category} | ${pad.label} | \`${src}\` | \`${destName}\` | ${bpm} | ${key} | ${scr} |`
+  })
+
+  const skippedRows = skipped.map(({ pad, reason }) =>
+    `| \`${pad.role}\` | ${pad.category} | ${reason} |`,
+  )
+
+  const selBasename = basename(selFile)
+
+  return `# Pack Builder — Audio Preview
+Pack: **${sel.packName}** (\`${sel.packId}\`)
+Preview folder: \`${previewDir}\`
+Selection file: \`${selBasename}\`
+Spine: BPM ${sel.spineAnalysis.suggestedBpm ?? '?'} · Key ${sel.spineAnalysis.suggestedKey ?? '?'}
+Approved: **${sel.approved ? 'YES — ready to build' : 'NO — review before running pack:build'}**
+Preview copied: ${copied.length} files
+Skipped: ${skipped.length} files
+
+> This folder is for listening only.
+> It does not affect public/audio/ or any pack config.
+> When ready, set approved:true in the selection JSON and run:
+> \`npm run pack:build -- --selection ${selBasename}\`
+
+## Files to review
+
+| # | Pad ID | Category | Label | Original source path | Copied filename | BPM | Key | Score |
+|---|--------|----------|-------|----------------------|-----------------|-----|-----|-------|
+${rows.join('\n')}
+
+## Skipped (no source)
+
+| Role | Category | Reason |
+|------|----------|--------|
+${skippedRows.length ? skippedRows.join('\n') : '_(none)_'}
+
+## Approval instructions
+
+1. Listen to every file above (open this folder in Finder).
+2. If any sound needs replacing, edit \`${selBasename}\` in the project reports/ folder:
+   - Find the pad entry by \`role\`
+   - Update \`sourcePath\` to a new absolute file path
+   - Re-run \`npm run pack:preview-documents\` to refresh this folder
+3. Once happy with all sounds, set \`approved: true\` in the JSON.
+4. Run: \`npm run pack:build -- --selection reports/${selBasename}\`
+`
+}
+
 // ─── CLI PARSER ───────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const args = {}
@@ -1215,15 +1646,19 @@ const [,, command, ...rest] = process.argv
 const args = parseArgs(rest)
 
 switch (command) {
-  case 'scan':     await commandScan(args);     break
-  case 'build':    await commandBuild(args);    break
+  case 'scan':    await commandScan(args);    break
+  case 'build':   await commandBuild(args);   break
   case 'register': await commandRegister(args); break
+  case 'preview': await commandPreview(args); break
+  case 'preview-documents': await commandPreviewDocuments(args); break
   default:
     console.log(
       'Usage:\n' +
-      '  npm run pack:scan     [-- --source <dir>] [--bpm <n>] [--key <K>] [--pack-id <id>] [--pack-name <name>]\n' +
-      '  npm run pack:build    -- --selection <reports/pack-selection-*.json>\n' +
-      '  npm run pack:register -- --pack-id <id>   (after build, auto-patches App.tsx)\n',
+      '  npm run pack:scan              [-- --source <dir>] [--bpm <n>] [--key <K>] [--pack-id <id>] [--pack-name <name>]\n' +
+      '  npm run pack:preview           [-- --selection <reports/pack-selection-*.json>]\n' +
+      '  npm run pack:preview-documents [-- --selection <reports/pack-selection-*.json>] [--out <dir>]\n' +
+      '  npm run pack:build             -- --selection <reports/pack-selection-*.json>\n' +
+      '  npm run pack:register          -- --pack-id <id>   (after build, auto-patches App.tsx)\n',
     )
     process.exit(0)
 }

@@ -11,7 +11,10 @@
     "validate:core-mix": "node scripts/validate-core-mix-pack.mjs",
     "pack:scan": "node scripts/pack-builder-agent.mjs scan",
     "pack:build": "node scripts/pack-builder-agent.mjs build",
-    "pack:register": "node scripts/pack-builder-agent.mjs register"
+    "pack:register": "node scripts/pack-builder-agent.mjs register",
+    "pack:preview": "node scripts/pack-builder-agent.mjs preview",
+    "pack:preview-documents": "node scripts/pack-builder-agent.mjs preview-documents",
+    "pack:preview-mixdown": "node scripts/preview-mixdown.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

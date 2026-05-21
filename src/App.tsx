@@ -46,6 +46,7 @@ import {
   scheduleGainRamp,
   validateLoopTiming,
 } from './musicClock'
+import { DevDiagnosticsDrawer, PackCompatibilityPanel } from './packBuilder'
 import './App.css'
 
 // =============================================================================
@@ -1251,6 +1252,7 @@ function App() {
   const [recordingElapsed, setRecordingElapsed] = useState(0)
   const recordingTimerRef = useRef<number | null>(null)
   const [stageEntered, setStageEntered] = useState(false)
+  const [devDrawerOpen, setDevDrawerOpen] = useState(false)
   const [introExiting, setIntroExiting] = useState(false)
   const [sharedMixAwaitingAudio, setSharedMixAwaitingAudio] = useState(false)
   const sharedMixHydratedRef = useRef(false)
@@ -2858,6 +2860,17 @@ function App() {
               aria-label="BPM"
             />
           </label>
+          {import.meta.env.DEV && (
+            <button
+              type="button"
+              className={`control-bar__dev${devDrawerOpen ? ' control-bar__dev--active' : ''}`}
+              onClick={() => setDevDrawerOpen((open) => !open)}
+              aria-label={devDrawerOpen ? 'Close dev diagnostics' : 'Open dev diagnostics'}
+              aria-expanded={devDrawerOpen}
+            >
+              DEV
+            </button>
+          )}
           <button
             type="button"
             className="control-bar__reset"
@@ -3034,6 +3047,12 @@ function App() {
         <span>Assigned beat-1 URL: {assignedBeatOneUrl || 'not assigned yet'}</span>
         <span>Same file URL: {audioDebugUrlsMatch ? 'yes' : 'not confirmed'}</span>
       </aside>
+
+      {import.meta.env.DEV && (
+        <DevDiagnosticsDrawer open={devDrawerOpen} onClose={() => setDevDrawerOpen(false)}>
+          <PackCompatibilityPanel />
+        </DevDiagnosticsDrawer>
+      )}
       </div>
     </div>
   )
