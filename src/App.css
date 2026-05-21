@@ -1917,6 +1917,13 @@
   grid-row: 2;
 }
 
+/* Core Mix Pack Alpha — slightly stronger category accent on group chips */
+.pad-panel__cp-rows--cma .pad-panel__cp-group-hdr {
+  opacity: 0.95;
+  border-bottom-width: 2px;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--cp-group-color, #aaa) 35%, transparent);
+}
+
 .sound-pad {
   position: relative;
   overflow: hidden;

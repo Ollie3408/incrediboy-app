@@ -19,6 +19,7 @@ import * as Tone from 'tone'
 import { beatsBoxCuratedPack1 } from './generated/audioPacks/beatsBoxCuratedPack1'
 import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
 import { cyberpunkPack1 } from './generated/audioPacks/cyberpunkPack1'
+import { coreMixPackAlpha, CORE_MIX_CATEGORY_COLORS } from './generated/audioPacks/coreMixPackAlpha'
 import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import {
@@ -291,6 +292,7 @@ type ActivePackId =
   | 'beats-box-pack-1'
   | 'beats-box-curated-pack-1'
   | 'cyberpunk-pack-1'
+  | 'core-mix-pack-alpha'
 type PackAudioCategory =
   | 'beat'
   | 'bass'
@@ -406,6 +408,23 @@ const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
     }),
     audioUrls: cyberpunkPack1.audioUrls,
   },
+  'core-mix-pack-alpha': {
+    id: coreMixPackAlpha.id as ActivePackId,
+    name: coreMixPackAlpha.name,
+    pads: coreMixPackAlpha.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category as PackAudioCategory,
+      audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
+      volume: pad.volume,
+      playbackMode: pad.playbackMode,
+      playbackQuantization: pad.playbackQuantization,
+      allowDriftCorrection: pad.allowDriftCorrection,
+      bpm: pad.bpm,
+      bars: pad.bars,
+    })),
+    audioUrls: coreMixPackAlpha.audioUrls,
+  },
 }
 
 const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
@@ -419,6 +438,7 @@ const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
 const TRANCE_REPLACEMENT_PAD_IDS = new Set(ROW_A.slice(0, 5).map((pad) => pad.id))
 const CURATED_SLOT_PAD_IDS = new Set(ROW_A.slice(0, 7).map((pad) => pad.id))
 const CURATED_PACK_IDS = new Set<ActivePackId>([
+  'core-mix-pack-alpha',
   'trance-curated-pack-1',
   'beats-box-curated-pack-1',
   'cyberpunk-pack-1',
@@ -428,7 +448,12 @@ const CURATED_PACK_IDS = new Set<ActivePackId>([
 const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
-    packs: ['trance-curated-pack-1', 'beats-box-curated-pack-1', 'cyberpunk-pack-1'],
+    packs: [
+      'core-mix-pack-alpha',
+      'trance-curated-pack-1',
+      'beats-box-curated-pack-1',
+      'cyberpunk-pack-1',
+    ],
   },
   {
     group: 'Advanced — Raw Packs',
@@ -470,6 +495,64 @@ const CYBERPUNK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
     ],
   },
 ]
+
+/** Core Mix Pack Alpha — same 24-slot grid as Cyberpunk; category accent colors from pack config. */
+const CORE_MIX_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
+  {
+    groups: [
+      {
+        label: 'BEATS',
+        color: CORE_MIX_CATEGORY_COLORS.beat,
+        padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3'],
+      },
+      {
+        label: 'BASS',
+        color: CORE_MIX_CATEGORY_COLORS.bass,
+        padIds: ['percussion-0', 'percussion-1', 'percussion-2', 'percussion-3'],
+      },
+      {
+        label: 'MELODY',
+        color: CORE_MIX_CATEGORY_COLORS.melody,
+        padIds: ['melody-0', 'melody-1', 'melody-2', 'melody-4'],
+      },
+    ],
+  },
+  {
+    groups: [
+      {
+        label: 'FX',
+        color: CORE_MIX_CATEGORY_COLORS.fx,
+        padIds: ['effect-0', 'effect-1', 'effect-2', 'effect-3'],
+      },
+      {
+        label: 'ATMOSPHERES',
+        color: CORE_MIX_CATEGORY_COLORS.atmosphere,
+        padIds: ['melody-3', 'voice-4'],
+      },
+      {
+        label: 'VOCALS',
+        color: CORE_MIX_CATEGORY_COLORS.voice,
+        padIds: ['voice-0', 'voice-1', 'voice-2'],
+      },
+      {
+        label: 'TRANSITIONS',
+        color: CORE_MIX_CATEGORY_COLORS.transition,
+        padIds: ['beat-4', 'percussion-4', 'voice-3'],
+      },
+    ],
+  },
+]
+
+const GROUPED_CURATED_PACK_IDS = new Set<ActivePackId>([
+  'cyberpunk-pack-1',
+  'core-mix-pack-alpha',
+])
+
+function groupedPadRowsForPack(packId: ActivePackId): { groups: CyberpunkPadGroup[] }[] | null {
+  if (packId === 'cyberpunk-pack-1') return CYBERPUNK_PAD_ROWS
+  if (packId === 'core-mix-pack-alpha') return CORE_MIX_PAD_ROWS
+  return null
+}
 
 function groupPackPads(pack: RuntimeAudioPack): Record<PackAudioCategory, PackPadAudio[]> {
   return pack.pads.reduce(
@@ -2955,10 +3038,12 @@ function App() {
             transition={{ delay: 0.1 }}
           >
             <footer className="pad-panel" aria-label="Sound library">
-              {activePackId === 'cyberpunk-pack-1' ? (
-                /* ── Cyberpunk: 2-row grouped layout (matches default grid) ─ */
-                <div className="pad-panel__cp-rows">
-                  {CYBERPUNK_PAD_ROWS.map((row, ri) => (
+              {GROUPED_CURATED_PACK_IDS.has(activePackId) ? (
+                /* ── Curated 24-pad: 2-row grouped layout (matches default grid) ─ */
+                <div
+                  className={`pad-panel__cp-rows${activePackId === 'core-mix-pack-alpha' ? ' pad-panel__cp-rows--cma' : ''}`}
+                >
+                  {(groupedPadRowsForPack(activePackId) ?? CYBERPUNK_PAD_ROWS).map((row, ri) => (
                     <motion.div
                       key={ri}
                       className="pad-panel__cp-row-wrap"
