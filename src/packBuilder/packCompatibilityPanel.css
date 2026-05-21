@@ -1,0 +1,141 @@
+/* Pack compatibility content — lives inside DevDiagnosticsDrawer */
+
+.pack-compat-panel {
+  padding: 10px 12px 16px;
+  font-size: 0.62rem;
+}
+
+.pack-compat-panel__toolbar {
+  margin-bottom: 10px;
+}
+
+.pack-compat-panel__pack-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #888;
+  font-size: 0.52rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pack-compat-panel__select {
+  font: inherit;
+  font-size: 0.58rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 4px 6px;
+  width: 100%;
+}
+
+.pack-compat-panel__meta {
+  margin: 0 0 10px;
+  color: #aaa;
+  line-height: 1.4;
+}
+
+.pack-compat-panel__section-title {
+  margin: 0 0 8px;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #9bff70;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pack-compat-panel__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pack-compat-panel__metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pack-compat-panel__metric-label {
+  color: #888;
+  font-size: 0.52rem;
+}
+
+.pack-compat-panel__score--good {
+  color: #9bff70;
+  font-weight: 700;
+}
+
+.pack-compat-panel__score--ok {
+  color: #ffd36b;
+  font-weight: 700;
+}
+
+.pack-compat-panel__score--warn {
+  color: #ff7070;
+  font-weight: 700;
+}
+
+.pack-compat-panel__warnings,
+.pack-compat-panel__issues {
+  margin: 0 0 10px;
+  padding-left: 1.1em;
+  color: #ff9090;
+  line-height: 1.35;
+}
+
+.pack-compat-panel__summary {
+  margin-bottom: 14px;
+}
+
+.pack-compat-panel__table-wrap {
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+
+.pack-compat-panel__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.55rem;
+}
+
+.pack-compat-panel__table th,
+.pack-compat-panel__table td {
+  padding: 4px 5px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
+}
+
+.pack-compat-panel__table th {
+  color: #888;
+  font-weight: 600;
+}
+
+.pack-compat-panel__row--active {
+  background: rgba(155, 255, 112, 0.08);
+}
+
+.pack-compat-panel__future {
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+.pack-compat-panel__future-note {
+  margin: 0;
+  color: #666;
+  font-size: 0.52rem;
+  line-height: 1.45;
+}
+
+@media (min-width: 769px) {
+  .pack-compat-panel__metrics {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}

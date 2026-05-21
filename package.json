@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "validate:core-mix": "node scripts/validate-core-mix-pack.mjs",
+    "pack:scan": "node scripts/pack-builder-agent.mjs scan",
+    "pack:build": "node scripts/pack-builder-agent.mjs build",
+    "pack:register": "node scripts/pack-builder-agent.mjs register"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
