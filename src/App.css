@@ -1924,6 +1924,13 @@
   text-shadow: 0 0 8px color-mix(in srgb, var(--cp-group-color, #aaa) 35%, transparent);
 }
 
+.pad-panel__cp-rows--npa .pad-panel__cp-group-hdr {
+  opacity: 0.9;
+  border-bottom-width: 2px;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--cp-group-color, #aaa) 40%, transparent);
+  letter-spacing: 0.06em;
+}
+
 .sound-pad {
   position: relative;
   overflow: hidden;
