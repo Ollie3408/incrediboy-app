@@ -231,20 +231,21 @@
       "targetFile": "fx/fx_01.wav",
       "gameSlot": "effect-0",
       "volume": 0.58,
-      "playbackMode": "one-shot",
-      "playbackQuantization": "immediate",
-      "bpm": null,
+      "playbackMode": "loop",
+      "playbackQuantization": "bar",
+      "bpm": 100,
       "key": null,
-      "bars": null,
+      "bars": 1,
       "harmonicGroup": "atonal",
       "energy": 0.78,
       "lowEndWeight": 0.08,
       "transientDensity": 0.92,
       "mixabilityScore": 80,
-      "allowDriftCorrection": false,
+      "allowDriftCorrection": true,
       "score": 68,
       "warnings": [],
-      "needsSource": false
+      "needsSource": false,
+      "notes": "Loop: 100 BPM 1-bar rhythmic zap (2.400s = exactly 1 bar @ 100 BPM)"
     },
     {
       "slot": 9,
@@ -257,20 +258,21 @@
       "targetFile": "fx/fx_02.wav",
       "gameSlot": "effect-1",
       "volume": 0.55,
-      "playbackMode": "one-shot",
-      "playbackQuantization": "immediate",
-      "bpm": null,
+      "playbackMode": "loop",
+      "playbackQuantization": "bar",
+      "bpm": 100,
       "key": null,
-      "bars": null,
+      "bars": 1,
       "harmonicGroup": "atonal",
       "energy": 0.72,
       "lowEndWeight": 0.08,
       "transientDensity": 0.88,
       "mixabilityScore": 78,
-      "allowDriftCorrection": false,
+      "allowDriftCorrection": true,
       "score": 68,
       "warnings": [],
-      "needsSource": false
+      "needsSource": false,
+      "notes": "Loop: 100 BPM 1-bar rhythmic zap (2.400s = exactly 1 bar @ 100 BPM)"
     },
     {
       "slot": 10,
@@ -296,7 +298,8 @@
       "allowDriftCorrection": false,
       "score": 66,
       "warnings": [],
-      "needsSource": false
+      "needsSource": false,
+      "notes": "One-shot: 7.385s \u2014 no clean bar alignment at standard BPMs; cinematic sweep"
     },
     {
       "slot": 11,
@@ -309,8 +312,8 @@
       "targetFile": "fx/fx_04.wav",
       "gameSlot": "effect-3",
       "volume": 0.48,
-      "playbackMode": "one-shot",
-      "playbackQuantization": "immediate",
+      "playbackMode": "loop",
+      "playbackQuantization": "bar",
       "bpm": 105,
       "key": null,
       "bars": 6,
@@ -322,7 +325,8 @@
       "allowDriftCorrection": false,
       "score": 66,
       "warnings": [],
-      "needsSource": false
+      "needsSource": false,
+      "notes": "Loop: 105 BPM 6-bar on-spine chatter texture (13.714s = exactly 6 bars @ 105 BPM)"
     },
     {
       "slot": 12,
