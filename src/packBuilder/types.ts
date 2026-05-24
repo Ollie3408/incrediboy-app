@@ -75,7 +75,7 @@ export type CompatibleAudioPack = {
   description: string
   spine: CompatiblePackSpine
   /** Design philosophy tag for tooling / docs. */
-  philosophy: 'core-mix-alpha' | 'new-pack-alpha'
+  philosophy: 'core-mix-alpha' | 'new-pack-alpha' | 'bravo-pack' | 'delta-pack'
   pads: CompatiblePackPad[]
   audioBasePath: string
   audioUrls: Record<string, string>

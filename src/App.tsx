@@ -21,6 +21,8 @@ import { beatsBoxPack1 } from './generated/audioPacks/beatsBoxPack1'
 import { cyberpunkPack1 } from './generated/audioPacks/cyberpunkPack1'
 import { coreMixPackAlpha, CORE_MIX_CATEGORY_COLORS } from './generated/audioPacks/coreMixPackAlpha'
 import { newPackAlpha } from './generated/audioPacks/newPackAlpha'
+import { bravoPack } from './generated/audioPacks/bravoPack'
+import { deltaPack } from './generated/audioPacks/deltaPack'
 import { tranceCuratedPack1 } from './generated/audioPacks/tranceCuratedPack1'
 import { trancePack1 } from './generated/audioPacks/trancePack1'
 import {
@@ -122,6 +124,16 @@ const MASTER_LOOP_MS = 9600
 const MASTER_BEAT_MS = MASTER_LOOP_MS / 16
 /** One bar (4 beats) visual period. */
 const MASTER_BAR_MS = MASTER_LOOP_MS / 4
+/**
+ * How often the master phase lock monitor runs (ms).
+ * 200 ms = catches drift within half a beat at 128 BPM before it becomes perceptible.
+ * Soft correction (playbackRate) takes ~1–3 s to realign; hard snap fires at >80ms gap.
+ */
+const PHASE_CORRECTION_INTERVAL_MS = 200
+/** Soft-correction threshold: drifts above this trigger a playbackRate nudge. */
+const PHASE_SOFT_THRESHOLD_MS = 25
+/** Hard-snap threshold: drifts above this hard-seek audio.currentTime immediately. */
+const PHASE_HARD_THRESHOLD_MS = 80
 
 type PerformanceCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice'
 
@@ -295,6 +307,8 @@ type ActivePackId =
   | 'cyberpunk-pack-1'
   | 'core-mix-pack-alpha'
   | 'new-pack-alpha'
+  | 'bravo-pack'
+  | 'delta-pack'
 type PackAudioCategory =
   | 'beat'
   | 'bass'
@@ -444,6 +458,40 @@ const AUDIO_PACKS: Record<ActivePackId, RuntimeAudioPack> = {
     })),
     audioUrls: newPackAlpha.audioUrls,
   },
+  'bravo-pack': {
+    id: bravoPack.id as ActivePackId,
+    name: bravoPack.name,
+    pads: bravoPack.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category as PackAudioCategory,
+      audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
+      volume: pad.volume,
+      playbackMode: pad.playbackMode,
+      playbackQuantization: pad.playbackQuantization,
+      allowDriftCorrection: pad.allowDriftCorrection,
+      bpm: pad.bpm,
+      bars: pad.bars,
+    })),
+    audioUrls: bravoPack.audioUrls,
+  },
+  'delta-pack': {
+    id: deltaPack.id as ActivePackId,
+    name: deltaPack.name,
+    pads: deltaPack.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category as PackAudioCategory,
+      audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
+      volume: pad.volume,
+      playbackMode: pad.playbackMode,
+      playbackQuantization: pad.playbackQuantization,
+      allowDriftCorrection: pad.allowDriftCorrection,
+      bpm: pad.bpm,
+      bars: pad.bars,
+    })),
+    audioUrls: deltaPack.audioUrls,
+  },
 }
 
 const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
@@ -457,6 +505,8 @@ const PACK_CATEGORY_FALLBACKS: Record<SoundCategory, PackAudioCategory[]> = {
 const TRANCE_REPLACEMENT_PAD_IDS = new Set(ROW_A.slice(0, 5).map((pad) => pad.id))
 const CURATED_SLOT_PAD_IDS = new Set(ROW_A.slice(0, 7).map((pad) => pad.id))
 const CURATED_PACK_IDS = new Set<ActivePackId>([
+  'delta-pack',
+  'bravo-pack',
   'new-pack-alpha',
   'core-mix-pack-alpha',
   'trance-curated-pack-1',
@@ -469,6 +519,8 @@ const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
     packs: [
+      'delta-pack',
+      'bravo-pack',
       'new-pack-alpha',
       'core-mix-pack-alpha',
       'trance-curated-pack-1',
@@ -565,6 +617,29 @@ const CORE_MIX_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
 ]
 
 /**
+ * Bravo Pack — 120 BPM curated pack, same 24-slot grid layout.
+ * Row 1: BEATS(4) | BASS(4) | MELODY(4)
+ * Row 2: FX(4) | VOCALS(3) | TRANSITIONS(3) | ATMOSPHERES(2)
+ */
+const BRAVO_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
+  {
+    groups: [
+      { label: 'BEATS',  color: '#e84b3a', padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3'] },
+      { label: 'BASS',   color: '#c97d2a', padIds: ['percussion-0', 'percussion-1', 'percussion-2', 'percussion-3'] },
+      { label: 'MELODY', color: '#3a8ee8', padIds: ['melody-0', 'melody-1', 'melody-2', 'melody-4'] },
+    ],
+  },
+  {
+    groups: [
+      { label: 'FX',          color: '#2ab88a', padIds: ['effect-0', 'effect-1', 'effect-2', 'effect-3'] },
+      { label: 'VOCALS',      color: '#b83a7c', padIds: ['voice-0', 'voice-1', 'voice-2'] },
+      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['beat-4', 'percussion-4', 'voice-3'] },
+      { label: 'ATMOSPHERES', color: '#3a6eb8', padIds: ['melody-3', 'voice-4'] },
+    ],
+  },
+]
+
+/**
  * New Pack Alpha — same 24-slot grid layout as Cyberpunk / Core Mix.
  * Row 1: BEATS(4) | BASS(4) | MELODY(4)
  * Row 2: FX(4) | VOCALS(3) | TRANSITIONS(3) | ATMOSPHERES(2)
@@ -587,7 +662,32 @@ const NEW_PACK_ALPHA_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
   },
 ]
 
+/**
+ * Delta Pack — 128 BPM / Multi-key
+ * Row 1: BEATS(5) | BASS(4) | MELODY(3)
+ * Row 2: LAYERS(3: melody-04+atmo-01+atmo-02) | VOCALS(3) | FX(3) | TRANSITIONS(3)
+ */
+const DELTA_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
+  {
+    groups: [
+      { label: 'BEATS',  color: '#e84033', padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3', 'beat-4'] },
+      { label: 'BASS',   color: '#e89033', padIds: ['percussion-0', 'percussion-1', 'percussion-2', 'percussion-3'] },
+      { label: 'MELODY', color: '#338be8', padIds: ['melody-0', 'melody-1', 'melody-2'] },
+    ],
+  },
+  {
+    groups: [
+      { label: 'LAYERS',      color: '#5c66d4', padIds: ['melody-3', 'melody-4', 'voice-4'] },
+      { label: 'VOCALS',      color: '#c03a7a', padIds: ['voice-0', 'voice-1', 'voice-2'] },
+      { label: 'FX',          color: '#2aae85', padIds: ['effect-0', 'effect-1', 'effect-2'] },
+      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['effect-3', 'percussion-4', 'voice-3'] },
+    ],
+  },
+]
+
 const GROUPED_CURATED_PACK_IDS = new Set<ActivePackId>([
+  'delta-pack',
+  'bravo-pack',
   'new-pack-alpha',
   'cyberpunk-pack-1',
   'core-mix-pack-alpha',
@@ -597,6 +697,8 @@ function groupedPadRowsForPack(packId: ActivePackId): { groups: CyberpunkPadGrou
   if (packId === 'cyberpunk-pack-1') return CYBERPUNK_PAD_ROWS
   if (packId === 'core-mix-pack-alpha') return CORE_MIX_PAD_ROWS
   if (packId === 'new-pack-alpha') return NEW_PACK_ALPHA_PAD_ROWS
+  if (packId === 'bravo-pack') return BRAVO_PACK_PAD_ROWS
+  if (packId === 'delta-pack') return DELTA_PACK_PAD_ROWS
   return null
 }
 
@@ -1389,6 +1491,8 @@ function App() {
   const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
   /** Per-slot pad volume multiplier (0–1). Set when a pad is assigned. */
   const padVolumeRef = useRef<Map<number, number>>(new Map())
+  /** RAF handle for throttled volume slider updates — prevents 60Hz React re-renders. */
+  const volumeRafRef = useRef<number | null>(null)
   // Tracks which slots hold one-shot pads (loop = false) vs continuous loops
   const padOneShotRef = useRef<Map<number, boolean>>(new Map())
   /** Shared Web Audio context for the master dynamics compressor. */
@@ -1397,10 +1501,20 @@ function App() {
   /** MediaElementSourceNodes keyed by slot — needed for cleanup. */
   const sourceNodesRef = useRef<Map<number, MediaElementAudioSourceNode>>(new Map())
   const masterCycleIntervalRef = useRef<number | null>(null)
+  /** setInterval handle for the master phase lock correction monitor. */
+  const phaseCorrectionIntervalRef = useRef<number | null>(null)
   const isPlayingRef = useRef(false)
   const masterMutedRef = useRef(false)
   const mutedSlotsRef = useRef<Set<number>>(new Set())
   const volumeRef = useRef(volume)
+  /**
+   * True-transport-lock pause state.
+   * pauseOffsetsRef:      audio.currentTime captured for each slot the moment PAUSE is pressed.
+   * pauseClockElapsedRef: (performance.now() − originMs) captured at PAUSE — used to re-anchor
+   *                       the musical clock on resume so quantization stays correct.
+   */
+  const pauseOffsetsRef = useRef<Map<number, number>>(new Map())
+  const pauseClockElapsedRef = useRef<number>(0)
   // ── Musical clock & quantization ──────────────────────────────────────────
   /** Live musical clock — updated in startOrRestartLoops and on BPM change. */
   const musicalClockRef = useRef<MusicalClock>(makeClock(DEFAULT_BPM, MASTER_LOOP_MS))
@@ -1450,6 +1564,10 @@ function App() {
     if (masterCycleIntervalRef.current !== null) {
       window.clearInterval(masterCycleIntervalRef.current)
       masterCycleIntervalRef.current = null
+    }
+    if (phaseCorrectionIntervalRef.current !== null) {
+      window.clearInterval(phaseCorrectionIntervalRef.current)
+      phaseCorrectionIntervalRef.current = null
     }
     assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
@@ -1703,9 +1821,14 @@ function App() {
   }, [])
 
   const clearMasterCycle = useCallback(() => {
-    if (masterCycleIntervalRef.current === null) return
-    window.clearInterval(masterCycleIntervalRef.current)
-    masterCycleIntervalRef.current = null
+    if (masterCycleIntervalRef.current !== null) {
+      window.clearInterval(masterCycleIntervalRef.current)
+      masterCycleIntervalRef.current = null
+    }
+    if (phaseCorrectionIntervalRef.current !== null) {
+      window.clearInterval(phaseCorrectionIntervalRef.current)
+      phaseCorrectionIntervalRef.current = null
+    }
   }, [])
 
   const clearDiagnosticNativeTest = useCallback(() => {
@@ -1756,8 +1879,11 @@ function App() {
       })
     }
 
+    // Use the ref (not reactive `volume`) so slider moves never re-run this
+    // expensive effect. The volume useEffect below keeps players in sync.
+    const currentVol = volumeRef.current
     ALL_PADS.forEach((pad) => {
-      const previewPlayer = createTonePlayer(pad, volume, false, activePackId)
+      const previewPlayer = createTonePlayer(pad, currentVol, false, activePackId)
       if (previewPlayer) previewRef.current.players[pad.id] = previewPlayer
     })
 
@@ -1773,19 +1899,29 @@ function App() {
       clearDiagnosticNativeTest()
       clearDiagnosticToneTest()
     }
-  }, [activePackId, clearDiagnosticNativeTest, clearDiagnosticToneTest, volume])
+    // volume intentionally excluded: slider moves must NOT recreate Tone players.
+    // The separate volume useEffect keeps player.volume.value in sync via ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePackId, clearDiagnosticNativeTest, clearDiagnosticToneTest])
 
   useEffect(() => {
+    // Update Tone preview player volumes (no recreate — players persist across slider moves)
     const db = volumeDb(volume)
     Object.values(previewRef.current.players).forEach((player) => {
       if (player) player.volume.value = db
     })
+    // Inline padEffVol calculation here — padEffVol is declared after this effect
+    // (React rules require forward-declared callbacks to stay out of effect deps)
+    const master = normalizedVolume(volume)
     assignedAudioRef.current.forEach((audio, slot) => {
-      audio.volume = isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)
-        ? padEffVol(slot)
-        : 0
+      if (isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)) {
+        const padVol = padVolumeRef.current.get(slot) ?? 1.0
+        const categoryGain = categoryGainRef.current.get(slot) ?? 1.0
+        audio.volume = Math.max(0, Math.min(1, master * padVol * categoryGain))
+      } else {
+        audio.volume = 0
+      }
     })
-    console.log('[volume] updated', { value: volume, normalized: normalizedVolume(volume) })
   }, [volume])
 
   /** Cancel all scheduled replay timeouts and mark replay as inactive. */
@@ -1803,6 +1939,8 @@ function App() {
       // Cancel replay events on unmount so stale timeouts can't fire
       replayTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
       replayTimeoutsRef.current = []
+      // Cancel any pending volume RAF
+      if (volumeRafRef.current !== null) cancelAnimationFrame(volumeRafRef.current)
       // Close the shared Web Audio context
       if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
         void audioCtxRef.current.close()
@@ -1817,9 +1955,12 @@ function App() {
    * categoryGainRef is keyed by slot index and refreshed whenever slots change.
    */
   const padEffVol = useCallback((slotIndex: number): number => {
+    const master = normalizedVolume(volumeRef.current)
     const padVol = padVolumeRef.current.get(slotIndex) ?? 1.0
     const categoryGain = categoryGainRef.current.get(slotIndex) ?? 1.0
-    return normalizedVolume(volumeRef.current) * padVol * categoryGain
+    const result = master * padVol * categoryGain
+    // Guard against NaN / negative / >1 from any upstream bad value
+    return Math.max(0, Math.min(1, isFinite(result) ? result : 0))
   }, [])
 
   /** Dev-only report: loop mode, duration drift, manual-restart status per slot. */
@@ -1879,8 +2020,11 @@ function App() {
       const targetVol =
         options.vol ?? (slotMuted ? 0 : padEffVol(slot))
 
-      // Muted loop pads: keep playing silently so phase stays locked when unmuted
-      if (targetVol <= 0 && !isOneShot && isPlayingRef.current) {
+      // Muted loop pads that are NOT under global transport pause: keep playing silently
+      // so per-slot mute/unmute (handleSlotClick) is gapless.
+      // When masterMuted (true transport pause), do NOT start hidden playback —
+      // toggleMasterMute owns the synchronized resume sequence.
+      if (targetVol <= 0 && !isOneShot && isPlayingRef.current && !masterMutedRef.current) {
         audio.volume = 0
         if (audio.paused) {
           void audio.play().catch((err) =>
@@ -1940,12 +2084,108 @@ function App() {
     [startAssignedSlotAudio, logAssignedAudioDiagnostics],
   )
 
-  /** Re-anchor musical clock only — does NOT restart audio (gapless native loops). */
+  /**
+   * Master clock heartbeat — keeps masterCycleIntervalRef alive as a session-active
+   * signal for createAssignedAudio's quantize-vs-start decision.
+   *
+   * IMPORTANT: do NOT reset originMs here. The clock origin is anchored once at
+   * startOrRestartLoops() time and must remain fixed for the life of the session.
+   * Re-anchoring at a non-bar-aligned interval (MASTER_LOOP_MS = 9600 ms, which is
+   * not a multiple of any audio loop length) shifts msUntilNextBoundary calculations
+   * away from true beat positions, causing new pads to start at the wrong beat/bar.
+   */
   const tickMasterClock = useCallback(() => {
-    musicalClockRef.current = { ...musicalClockRef.current, originMs: performance.now() }
     if (import.meta.env.DEV) {
-      console.debug('[master] clock re-anchored (audio untouched)', { loopMs: MASTER_LOOP_MS })
+      console.debug('[master] clock heartbeat — origin preserved', {
+        originMs: musicalClockRef.current.originMs,
+        elapsedMs: Math.round(performance.now() - musicalClockRef.current.originMs),
+      })
     }
+  }, [])
+
+  /**
+   * Master phase lock correction monitor.
+   *
+   * Runs every PHASE_CORRECTION_INTERVAL_MS while a session is active.
+   * For each looping pad, computes where the audio SHOULD be based on the
+   * master clock origin, then compares it to where it actually is.
+   *
+   * Correction strategy:
+   *   • delta < PHASE_SOFT_THRESHOLD_MS (25ms)  → within tolerance; restore playbackRate=1
+   *   • delta 25–80ms                           → soft nudge via playbackRate (±2%)
+   *   • delta > PHASE_HARD_THRESHOLD_MS (80ms)  → hard snap audio.currentTime
+   *
+   * Loop boundary wraparound is handled so a pad near the end of its loop
+   * is never compared naïvely against a master position near the start.
+   *
+   * One-shots are completely excluded — they have no repeating phase to lock.
+   */
+  const runPhaseCorrectionPass = useCallback(() => {
+    if (!isPlayingRef.current || masterMutedRef.current) return
+    const originMs = musicalClockRef.current.originMs
+    if (originMs === 0) return
+
+    const elapsedMs = performance.now() - originMs
+
+    assignedAudioRef.current.forEach((audio, slot) => {
+      // One-shots are exempt from phase correction
+      if (padOneShotRef.current.get(slot)) return
+      // Skip paused elements (true-transport pause or mid-resume)
+      if (audio.paused) return
+
+      const loopDurationS = audio.duration
+      if (!isFinite(loopDurationS) || loopDurationS < 0.1) return
+
+      const loopDurationMs = loopDurationS * 1000
+
+      // Expected position based on session origin
+      const expectedS = (elapsedMs % loopDurationMs) / 1000
+      const actualS   = audio.currentTime
+
+      // Delta: positive = audio is BEHIND master (speed up), negative = AHEAD (slow down).
+      // Unwrap across the loop boundary so end-of-loop vs start-of-loop comparisons
+      // resolve to the true short-path delta rather than the full loop length.
+      let delta = expectedS - actualS
+      if (delta >  loopDurationS / 2) delta -= loopDurationS
+      if (delta < -loopDurationS / 2) delta += loopDurationS
+
+      const absDeltaMs = Math.abs(delta) * 1000
+
+      if (absDeltaMs < PHASE_SOFT_THRESHOLD_MS) {
+        // Within tolerance — restore playbackRate if a previous pass adjusted it
+        if (audio.playbackRate !== 1.0) {
+          audio.playbackRate = 1.0
+          if (import.meta.env.DEV) {
+            console.debug('[phase] realigned — rate restored', { slot, absDeltaMs: absDeltaMs.toFixed(1) })
+          }
+        }
+        return
+      }
+
+      if (absDeltaMs <= PHASE_HARD_THRESHOLD_MS) {
+        // Soft correction: nudge playbackRate ±2% until the element drifts back into phase.
+        // At ±2% the pitch shift is 0.34 semitones — below the ~1-semitone JND threshold.
+        // At a 50ms deficit, 2% speed-up closes the gap in ~2.5 s of playback.
+        const rate = delta > 0 ? 1.02 : 0.98
+        if (audio.playbackRate !== rate) audio.playbackRate = rate
+        if (import.meta.env.DEV) {
+          console.debug('[phase] soft correction', {
+            slot, deltaMs: (delta * 1000).toFixed(1), rate,
+          })
+        }
+        return
+      }
+
+      // Hard snap: gap is too large for rate correction to close in a musical timeframe.
+      // Seek directly to the expected position, then return rate to 1.
+      audio.currentTime = expectedS
+      audio.playbackRate = 1.0
+      console.warn('[phase] hard snap', {
+        slot,
+        deltaMs: (delta * 1000).toFixed(1),
+        snappedToS: expectedS.toFixed(3),
+      })
+    })
   }, [])
 
   const startOrRestartLoops = useCallback(() => {
@@ -1958,10 +2198,18 @@ function App() {
     setTransportStatus(masterMutedRef.current ? 'Paused' : 'Playing')
     // Start each slot once — browser native loop handles seamless repetition
     startAllAssignedAudio({ forceRestart: true, fadeIn: true })
-    // Master interval only updates the musical clock for quantization timing
+    // Heartbeat: keeps masterCycleIntervalRef non-null as the session-active signal
     masterCycleIntervalRef.current = window.setInterval(tickMasterClock, MASTER_LOOP_MS)
-    console.log('[master] session started', { loopMs: MASTER_LOOP_MS, gaplessNativeLoop: true })
-  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock])
+    // Phase lock monitor: continuously corrects any drift between loop pads
+    phaseCorrectionIntervalRef.current = window.setInterval(
+      runPhaseCorrectionPass,
+      PHASE_CORRECTION_INTERVAL_MS,
+    )
+    console.log('[master] session started', {
+      loopMs: MASTER_LOOP_MS,
+      phaseCorrectionMs: PHASE_CORRECTION_INTERVAL_MS,
+    })
+  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock, runPhaseCorrectionPass])
 
   /**
    * Lazily create a shared AudioContext + DynamicsCompressor chain.
@@ -2385,15 +2633,87 @@ function App() {
     const nextMuted = !masterMutedRef.current
     masterMutedRef.current = nextMuted
     setMasterMuted(nextMuted)
-    assignedAudioRef.current.forEach((audio, slot) => {
-      audio.volume = nextMuted || mutedSlotsRef.current.has(slot) ? 0 : padEffVol(slot)
-    })
+
+    if (nextMuted) {
+      // ── TRUE TRANSPORT FREEZE ────────────────────────────────────────────────
+      // 1. Capture clock elapsed so we can re-anchor on resume.
+      pauseClockElapsedRef.current =
+        musicalClockRef.current.originMs > 0
+          ? performance.now() - musicalClockRef.current.originMs
+          : 0
+
+      // 2. Snapshot each element's exact playback position, then pause it.
+      //    All pauses happen synchronously within a single forEach — no stagger.
+      pauseOffsetsRef.current.clear()
+      assignedAudioRef.current.forEach((audio, slot) => {
+        pauseOffsetsRef.current.set(slot, audio.currentTime)
+        audio.volume = 0
+        audio.pause()
+      })
+
+      console.log('[transport] FREEZE', {
+        slots: assignedAudioRef.current.size,
+        clockElapsedMs: Math.round(pauseClockElapsedRef.current),
+      })
+    } else {
+      // ── TRUE TRANSPORT RESUME (synchronized batch) ───────────────────────────
+      // Phase 1 — re-anchor the musical clock so quantization stays accurate.
+      //            newOrigin makes the clock think it started clockElapsed ms ago,
+      //            which matches the audio positions we are about to restore.
+      if (musicalClockRef.current.originMs > 0) {
+        musicalClockRef.current = {
+          ...musicalClockRef.current,
+          originMs: performance.now() - pauseClockElapsedRef.current,
+        }
+      }
+
+      // Phase 2 — wake the AudioContext if the browser suspended it during pause.
+      if (audioCtxRef.current?.state === 'suspended') {
+        void audioCtxRef.current.resume().catch((err) =>
+          console.warn('[transport] AudioContext resume failed', err),
+        )
+      }
+
+      // Phase 3 — restore all currentTime positions BEFORE any play() call.
+      //            This ensures the seek is complete for every element at the
+      //            same JS synchronous execution point.
+      assignedAudioRef.current.forEach((audio, slot) => {
+        const storedTime = pauseOffsetsRef.current.get(slot)
+        if (storedTime !== undefined) {
+          // Pad was playing when paused — restore its exact position.
+          audio.currentTime = storedTime
+        } else if (audio.duration > 0) {
+          // Pad was added while paused — clock-estimate its position so it
+          // joins the groove rather than starting from 0.
+          const estimated = pauseClockElapsedRef.current % audio.duration
+          audio.currentTime = isFinite(estimated) ? estimated : 0
+        }
+      })
+
+      // Phase 4 — start all audio in a single synchronous batch.
+      //            All play() calls are issued without any await between them
+      //            so the browser receives them within the same task and can
+      //            align them to the same audio render quantum (~3 ms frame).
+      assignedAudioRef.current.forEach((audio, slot) => {
+        const slotMuted = mutedSlotsRef.current.has(slot)
+        audio.volume = slotMuted ? 0 : padEffVol(slot)
+        void audio.play().catch((err) =>
+          console.warn('[transport] resume play failed', { slot, err }),
+        )
+      })
+
+      pauseOffsetsRef.current.clear()
+
+      console.log('[transport] RESUME', {
+        slots: assignedAudioRef.current.size,
+        clockElapsedMs: Math.round(pauseClockElapsedRef.current),
+        audioCtxState: audioCtxRef.current?.state ?? 'none',
+      })
+    }
+
     setTransportStatus(nextMuted ? 'Paused' : (isPlayingRef.current ? 'Playing' : 'Stopped'))
-    console.log(nextMuted ? '[pause] global mute' : '[pause] global unmute', {
-      muted: nextMuted,
-    })
     recordEvent({ tp: 'mm', mu: nextMuted })
-  }, [recordEvent])
+  }, [padEffVol, recordEvent])
 
   const handleStopReset = useCallback(() => {
     console.log('[audio] reset stopping all')
@@ -2427,11 +2747,37 @@ function App() {
     [handleStopReset, recordEvent],
   )
 
-  /** Volume change handler — updates state and records a timeline event. */
+  /** Volume change handler — updates audio immediately via ref, throttles React state via RAF.
+   *  This prevents 60+ re-renders/s during slider drag (which was recreating Tone players). */
   const handleVolumeChange = useCallback((vol: number) => {
-    volumeRef.current = vol
-    setVolume(vol)
-    recordEvent({ tp: 'vo', vol })
+    // 1. Clamp incoming value defensively
+    const clamped = Math.max(0, Math.min(100, isFinite(vol) ? vol : 0))
+
+    // 2. Update ref immediately so padEffVol() reads the right value on next call
+    volumeRef.current = clamped
+
+    // 3. Apply to all live audio elements directly — no React state needed for audio
+    const db = volumeDb(clamped)
+    Object.values(previewRef.current.players).forEach((player) => {
+      if (player) player.volume.value = db
+    })
+    assignedAudioRef.current.forEach((audio, slot) => {
+      if (isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)) {
+        const master = Math.max(0, Math.min(1, clamped / 100))
+        const padVol = padVolumeRef.current.get(slot) ?? 1.0
+        const categoryGain = categoryGainRef.current.get(slot) ?? 1.0
+        const eff = Math.max(0, Math.min(1, master * padVol * categoryGain))
+        audio.volume = eff
+      }
+    })
+
+    // 4. Throttle React state update + timeline event to one per animation frame
+    if (volumeRafRef.current !== null) cancelAnimationFrame(volumeRafRef.current)
+    volumeRafRef.current = requestAnimationFrame(() => {
+      volumeRafRef.current = null
+      setVolume(clamped)
+      recordEvent({ tp: 'vo', vol: clamped })
+    })
   }, [recordEvent])
 
   /** BPM change handler — updates state and records a timeline event. */
@@ -2612,6 +2958,9 @@ function App() {
           assignedAudioRef.current.forEach((audio, slot) => {
             audio.volume = event.mu || mutedSlotsRef.current.has(slot) ? 0 : padEffVol(slot)
           })
+          if (!event.mu && audioCtxRef.current?.state === 'suspended') {
+            void audioCtxRef.current.resume().catch(() => undefined)
+          }
           break
         }
         case 'pl': {
@@ -3087,7 +3436,7 @@ function App() {
               {GROUPED_CURATED_PACK_IDS.has(activePackId) ? (
                 /* ── Curated 24-pad: 2-row grouped layout (matches default grid) ─ */
                 <div
-                  className={`pad-panel__cp-rows${activePackId === 'core-mix-pack-alpha' ? ' pad-panel__cp-rows--cma' : activePackId === 'new-pack-alpha' ? ' pad-panel__cp-rows--npa' : ''}`}
+                  className={`pad-panel__cp-rows${activePackId === 'core-mix-pack-alpha' ? ' pad-panel__cp-rows--cma' : activePackId === 'new-pack-alpha' ? ' pad-panel__cp-rows--npa' : activePackId === 'bravo-pack' ? ' pad-panel__cp-rows--bp' : activePackId === 'delta-pack' ? ' pad-panel__cp-rows--dp' : ''}`}
                 >
                   {(groupedPadRowsForPack(activePackId) ?? CYBERPUNK_PAD_ROWS).map((row, ri) => (
                     <motion.div

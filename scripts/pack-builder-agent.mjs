@@ -769,9 +769,11 @@ async function commandBuild(args) {
     if (['beat','bass','melody','atmosphere'].includes(pad.category) && pad.playbackMode !== 'loop') {
       errors.push(`Pad ${pad.role} (${pad.category}) should be playbackMode "loop"`)
     }
-    if (['fx','transition'].includes(pad.category) && pad.playbackMode !== 'one-shot') {
+    if (pad.category === 'transition' && pad.playbackMode !== 'one-shot') {
       errors.push(`Pad ${pad.role} (${pad.category}) should be playbackMode "one-shot"`)
     }
+    // FX pads may be one-shot (cinematic) or loop (rhythmic texture performer).
+    // Looping FX are valid when explicitly set in the selection JSON.
   }
 
   if (errors.length > 0) {
@@ -1266,8 +1268,8 @@ async function commandPreview(args) {
 /** Finder-friendly preview in ~/Documents/new-pack-alpha/recommended-audio-preview/ */
 async function commandPreviewDocuments(args) {
   const selFile = resolveLatestSelection(args['--selection'])
-  const outDir = args['--out']
-    ? resolve(args['--out'])
+  const outDir = (args['--out'] || args['--output'])
+    ? resolve(args['--out'] || args['--output'])
     : join(homedir(), 'Documents', 'new-pack-alpha', 'recommended-audio-preview')
   runDocumentsPreviewExport(selFile, outDir)
 }

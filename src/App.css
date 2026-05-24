@@ -1931,6 +1931,23 @@
   letter-spacing: 0.06em;
 }
 
+/* Bravo Pack — warm energetic accent style */
+.pad-panel__cp-rows--bp .pad-panel__cp-group-hdr {
+  opacity: 0.9;
+  border-bottom-width: 2px;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--cp-group-color, #e84b3a) 50%, transparent);
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+
+.pad-panel__cp-rows--dp .pad-panel__cp-group-hdr {
+  opacity: 0.9;
+  border-bottom-width: 2px;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--cp-group-color, #e84033) 60%, transparent);
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
 .sound-pad {
   position: relative;
   overflow: hidden;

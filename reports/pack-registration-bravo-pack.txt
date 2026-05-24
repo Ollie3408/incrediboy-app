@@ -1,0 +1,63 @@
+=== App.tsx Registration for: Bravo Pack (bravo-pack) ===
+
+-- 1. ADD IMPORT at top of App.tsx (after cyberpunk import):
+import { bravoPack } from './generated/audioPacks/bravoPack'
+
+-- 2. ADD TO ActivePackId union type:
+  | 'bravo-pack'
+
+-- 3. ADD TO AUDIO_PACKS (after cyberpunk-pack-1 entry):
+  'bravo-pack': {
+    id: bravoPack.id as ActivePackId,
+    name: bravoPack.name,
+    pads: bravoPack.pads.map((pad) => ({
+      id: pad.id,
+      category: pad.category as PackAudioCategory,
+      audioFile: pad.audioFile,
+      sourceFile: pad.sourceFile,
+      volume: pad.volume,
+      playbackMode: pad.playbackMode,
+      playbackQuantization: pad.playbackQuantization,
+      allowDriftCorrection: pad.allowDriftCorrection,
+      bpm: pad.bpm,
+      bars: pad.bars,
+    })),
+    audioUrls: bravoPack.audioUrls,
+  },
+
+-- 4. ADD TO CURATED_PACK_IDS set:
+  'bravo-pack',
+
+-- 5. ADD TO PACK_MENU curated group packs array:
+  'bravo-pack',
+
+-- 6. ADD PAD ROWS CONSTANT (after CORE_MIX_PAD_ROWS):
+const BRAVO_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
+  {
+    groups: [
+      { label: 'BEATS',  color: '#9b4dca', padIds: ['beat-0','beat-1','beat-2','beat-3'] },
+      { label: 'BASS',   color: '#d47a1a', padIds: ['percussion-0','percussion-1','percussion-2','percussion-3'] },
+      { label: 'MELODY', color: '#3b8fe0', padIds: ['melody-0','melody-1','melody-2','melody-4'] },
+    ],
+  },
+  {
+    groups: [
+      { label: 'FX',         color: '#3cb878', padIds: ['effect-0','effect-1','effect-2','effect-3'] },
+      { label: 'VOCALS',     color: '#e04545', padIds: ['voice-0','voice-1','voice-2'] },
+      { label: 'ACCENTS',    color: '#6b8f71', padIds: ['beat-4','percussion-4','voice-3'] },
+      { label: 'ATMOSPHERE', color: '#6b7fd4', padIds: ['melody-3','voice-4'] },
+    ],
+  },
+]
+
+-- 7. UPDATE groupedPadRowsForPack() function to add:
+  if (packId === 'bravo-pack') return BRAVO_PACK_PAD_ROWS
+
+-- 8. UPDATE GROUPED_CURATED_PACK_IDS set:
+  'bravo-pack',
+
+-- 9. UPDATE packRegistry.ts to include:
+import { bravoPackCompatible } from '../generated/audioPacks/bravoPack'
+COMPATIBLE_PACKS['bravo-pack'] = bravoPackCompatible
+
+=== END SNIPPET ===
