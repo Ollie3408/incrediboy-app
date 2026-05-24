@@ -41,7 +41,6 @@ import {
   type MusicalClock,
   type QuantizeMode,
   clockWithBpm,
-  computeCategoryGains,
   computePlaybackRate,
   currentBarInLoop,
   currentBeatInBar,
@@ -835,6 +834,98 @@ function normalizedVolume(volume: number): number {
 
 function volumeDb(volume: number): number {
   return volume <= 0 ? -Infinity : (volume - 100) * 0.36
+}
+
+/**
+ * Priority-aware dynamic category gain staging.
+ *
+ * Replaces the musicClock.ts version with a full 7-category priority model.
+ * Higher-priority categories (beats) are never attenuated; lower-priority ones
+ * (FX, transitions) duck progressively as concurrent count rises, preventing
+ * gain stacking from overloading the compressor.
+ *
+ * Priority order (1 = fully protected):
+ *   beats(1) > bass(2) > melody(3) > vocals(4) > atmosphere(5) > fx(6) > transition(7)
+ *
+ * Mix-bus headroom guard:
+ *   When total active layers > 5, a gentle mix-bus reduction (-3% per extra layer)
+ *   is applied to ALL categories, preventing the compressor from working too hard.
+ *
+ * Floor: no category is reduced below 0.50 — all performers remain audible.
+ */
+function computeEnhancedCategoryGains(
+  counts: Partial<Record<string, number>>,
+): Map<string, number> {
+  const gains = new Map<string, number>()
+
+  // Priority 1 — beats: fully protected, never attenuated
+
+  // Priority 2 — bass: -7% per layer beyond 2
+  const bassCount = counts['bass'] ?? 0
+  if (bassCount > 2) {
+    gains.set('bass', Math.pow(0.93, bassCount - 2))
+  }
+
+  // Priority 3 — melody: -3% per layer beyond 3
+  const melodyCount = counts['melody'] ?? 0
+  if (melodyCount > 3) {
+    gains.set('melody', Math.pow(0.97, melodyCount - 3))
+  }
+
+  // Priority 4 — vocals: -4% per layer beyond 2
+  const vocalCount = (counts['voice'] ?? 0) + (counts['vocals'] ?? 0)
+  if (vocalCount > 2) {
+    const m = Math.pow(0.96, vocalCount - 2)
+    gains.set('voice', m)
+    gains.set('vocals', m)
+  }
+
+  // Priority 5 — atmosphere: -5% per layer beyond 1
+  const atmosphereCount = (counts['atmosphere'] ?? 0) + (counts['atmospheres'] ?? 0)
+  if (atmosphereCount > 1) {
+    const m = Math.pow(0.95, atmosphereCount - 1)
+    gains.set('atmosphere', m)
+    gains.set('atmospheres', m)
+  }
+
+  // Priority 6 — FX / effect: -6% per layer beyond 1
+  const fxCount = (counts['effect'] ?? 0) + (counts['fx'] ?? 0)
+  if (fxCount > 1) {
+    const m = Math.pow(0.94, fxCount - 1)
+    gains.set('effect', m)
+    gains.set('fx', m)
+  }
+
+  // Priority 7 — transitions: -8% per layer beyond 1
+  const transitionCount = (counts['transition'] ?? 0) + (counts['transitions'] ?? 0)
+  if (transitionCount > 1) {
+    const m = Math.pow(0.92, transitionCount - 1)
+    gains.set('transition', m)
+    gains.set('transitions', m)
+  }
+
+  // ── Mix-bus headroom guard ─────────────────────────────────────────────────
+  // When total performer count exceeds 5, apply a gentle bus reduction to all
+  // categories so the compressor does not need to apply heavy gain reduction
+  // (which causes pumping and transient smearing).
+  const totalLayers = Object.values(counts).reduce((s: number, n) => s + (n ?? 0), 0)
+  if (totalLayers > 5) {
+    const busReduction = Math.pow(0.97, totalLayers - 5)  // -3% per layer above 5
+    // Apply to categories that already have an explicit gain
+    gains.forEach((g, cat) => gains.set(cat, g * busReduction))
+    // Apply to remaining categories (beats and anything else at 1.0)
+    for (const [cat, count] of Object.entries(counts)) {
+      if ((count ?? 0) > 0 && !gains.has(cat)) {
+        gains.set(cat, busReduction)
+      }
+    }
+  }
+
+  // ── Audibility floor ──────────────────────────────────────────────────────
+  // Never reduce any category below 0.50 — every performer must remain present.
+  gains.forEach((g, cat) => gains.set(cat, Math.max(0.50, g)))
+
+  return gains
 }
 
 function createTonePlayer(
@@ -1683,7 +1774,7 @@ function App() {
       counts[cat] = (counts[cat] ?? 0) + 1
       slotCategories.push({ slot: i, category: cat })
     }
-    const categoryMultipliers = computeCategoryGains(counts)
+    const categoryMultipliers = computeEnhancedCategoryGains(counts)
     categoryGainRef.current.clear()
     for (const { slot, category } of slotCategories) {
       categoryGainRef.current.set(slot, categoryMultipliers.get(category) ?? 1.0)
@@ -1917,7 +2008,7 @@ function App() {
       if (isPlayingRef.current && !masterMutedRef.current && !mutedSlotsRef.current.has(slot)) {
         const padVol = padVolumeRef.current.get(slot) ?? 1.0
         const categoryGain = categoryGainRef.current.get(slot) ?? 1.0
-        audio.volume = Math.max(0, Math.min(1, master * padVol * categoryGain))
+        audio.volume = Math.max(0, Math.min(0.95, master * padVol * categoryGain))
       } else {
         audio.volume = 0
       }
@@ -1959,8 +2050,9 @@ function App() {
     const padVol = padVolumeRef.current.get(slotIndex) ?? 1.0
     const categoryGain = categoryGainRef.current.get(slotIndex) ?? 1.0
     const result = master * padVol * categoryGain
-    // Guard against NaN / negative / >1 from any upstream bad value
-    return Math.max(0, Math.min(1, isFinite(result) ? result : 0))
+    // Soft ceiling 0.95 — prevents any single element from hitting digital full-scale
+    // into the compressor input, preserving headroom across a full 7-performer stack.
+    return Math.max(0, Math.min(0.95, isFinite(result) ? result : 0))
   }, [])
 
   /** Dev-only report: loop mode, duration drift, manual-restart status per slot. */
@@ -2224,12 +2316,17 @@ function App() {
       if (!audioCtxRef.current) {
         const ctx = new AudioContext()
         const comp = ctx.createDynamicsCompressor()
-        // Conservative settings: transparent at low levels, catches peaks
+        // Glue compression: gentle ratio preserves punch; faster release prevents pumping.
+        // Ratio 2.5:1 gives ~6dB of GR at 0dBFS input (-18dB threshold) — transparent
+        // enough for 7 concurrent performers without the hard pumping of 6:1.
+        // Attack 10ms: lets kick/snare transients through before compression clamps down.
+        // Release 200ms: faster than 300ms so the compressor resets between beats at 128 BPM
+        //   (one beat = 469ms — compressor fully releases before the next hit).
         comp.threshold.setValueAtTime(-18, ctx.currentTime)
         comp.knee.setValueAtTime(20, ctx.currentTime)
-        comp.ratio.setValueAtTime(6, ctx.currentTime)
-        comp.attack.setValueAtTime(0.005, ctx.currentTime)
-        comp.release.setValueAtTime(0.30, ctx.currentTime)
+        comp.ratio.setValueAtTime(2.5, ctx.currentTime)
+        comp.attack.setValueAtTime(0.010, ctx.currentTime)
+        comp.release.setValueAtTime(0.20, ctx.currentTime)
         comp.connect(ctx.destination)
         audioCtxRef.current = ctx
         masterCompressorRef.current = comp
@@ -2766,7 +2863,7 @@ function App() {
         const master = Math.max(0, Math.min(1, clamped / 100))
         const padVol = padVolumeRef.current.get(slot) ?? 1.0
         const categoryGain = categoryGainRef.current.get(slot) ?? 1.0
-        const eff = Math.max(0, Math.min(1, master * padVol * categoryGain))
+        const eff = Math.max(0, Math.min(0.95, master * padVol * categoryGain))
         audio.volume = eff
       }
     })
