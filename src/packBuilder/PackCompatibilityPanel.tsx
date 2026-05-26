@@ -9,6 +9,7 @@ import {
   COMPATIBLE_PACK_LIST,
   DEFAULT_COMPATIBLE_PACK_ID,
   getCompatiblePack,
+  getPackStatus,
   validatePackSpine,
 } from './index'
 import './packCompatibilityPanel.css'
@@ -64,11 +65,20 @@ export function PackCompatibilityPanel() {
             onChange={(e) => setPackId(e.target.value)}
             aria-label="Compatible pack"
           >
-            {COMPATIBLE_PACK_LIST.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            <optgroup label="Active">
+              {COMPATIBLE_PACK_LIST.filter((p) => getPackStatus(p.id) === 'playable').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Archive">
+              {COMPATIBLE_PACK_LIST.filter((p) => getPackStatus(p.id) === 'archived').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} [Archived]
+                </option>
+              ))}
+            </optgroup>
           </select>
         </label>
       </div>

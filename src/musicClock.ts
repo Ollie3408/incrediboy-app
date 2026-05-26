@@ -168,25 +168,33 @@ export function computePlaybackRate(
  *   • Shorter durationMs → tighter transient, less fade
  *   • 12–25 ms is the sweet spot for click prevention without audible fade
  */
+/**
+ * Fade the audio element from 0 to targetVol over durationMs using
+ * requestAnimationFrame — frame-aligned, zero timer pollution.
+ *
+ * Previous implementation used 5 concurrent setInterval timers (one per step at
+ * 4 ms intervals).  With 7+ pads starting simultaneously that created 35 competing
+ * 4 ms callbacks that starved the audio render budget and caused start-up stutters.
+ * RAF is coalesced by the browser into a single frame callback per element and has
+ * no adverse effect on the audio thread scheduling.
+ */
 export function scheduleGainRamp(
   audio: HTMLAudioElement,
   targetVol: number,
-  durationMs = 20,
+  durationMs = 40,
 ): void {
   if (targetVol <= 0) {
     audio.volume = 0
     return
   }
-  const steps = 5
-  const stepMs = Math.max(1, durationMs / steps)
-  const stepVol = targetVol / steps
   audio.volume = 0
-  let step = 0
-  const id = window.setInterval(() => {
-    step++
-    audio.volume = Math.min(targetVol, stepVol * step)
-    if (step >= steps) window.clearInterval(id)
-  }, stepMs)
+  const startMs = performance.now()
+  const tick = () => {
+    const progress = Math.min(1, (performance.now() - startMs) / durationMs)
+    audio.volume = targetVol * progress
+    if (progress < 1) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
 }
 
 // ── Category gain staging ─────────────────────────────────────────────────────

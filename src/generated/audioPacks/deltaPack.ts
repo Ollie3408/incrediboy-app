@@ -7,10 +7,23 @@
  * ⚠️ BPM NOTE: This pack runs at 128 BPM, not the 105 BPM spine of other packs.
  *    All content is natively 128 BPM — no drift correction required.
  *
+ * Changelog:
+ *   bass-03: repaired leading silence (bars 16→8, silence-trimmed source)
+ *   melody-03: replaced Lead Main→Break Pluck (bars 16→8, silence+content fix)
+ *   beat-03: replaced Loop 003→Loop 004 (Loop 003 had two 0.7s structural gaps causing double-beat)
+ *   beat-03: replaced Loop 004→Hi-Hat Loop 005 (30s full loops caused phase-correction hard snaps
+ *            producing audible double-beat; 7.5s hi-hat loop eliminates the issue entirely)
+ *   voice-4: replaced atmo-02→vocal-05 (voice-4 misplaced in LAYERS as atmosphere; now a true
+ *            vocal chop — VCT Legacy Loop 16 Amin, 4 bars, matches bass-03/melody-03 key)
+ *   layout:  voice-3 moved from TRANSITIONS→VOCALS; voice-4 moved from LAYERS→VOCALS;
+ *            all 5 voice pads now grouped together in VOCALS section
+ *   voice-0: replaced Loop 06 C#min→Legacy Loop 02 C#min (zero silence, higher energy density)
+ *   voice-1: replaced Loop 08 Gmin→Legacy Loop 13 Gmin (distinct chop pattern, active from t=0)
+ *
  * INDEX ORDER (must match ALL_PADS in App.tsx):
  *  0  beat-0       → beat-01 (Byte Groove, 8 bars)
  *  1  beat-1       → beat-02 (Byte Hat, 4 bars)
- *  2  beat-2       → beat-03 (Byte Full, 16 bars)
+ *  2  beat-2       → beat-03 (Byte Hat B, 4 bars — Hi-Hat Loop 005)
  *  3  beat-3       → beat-04 (Byte Top / No Kick, 8 bars)
  *  4  beat-4       → beat-05 (Byte Accent / Hi-Hat 2, 4 bars)
  *  5  melody-0     → melody-01 (Byte Lead C#min, 16 bars — trimmed from 17)
@@ -31,7 +44,7 @@
  * 20  voice-1      → vocal-02 (VCT Chop Gmin, 4 bars)
  * 21  voice-2      → vocal-03 (VCT Chop Fmin, 8 bars)
  * 22  voice-3      → trans-03 (Byte Drop — loop cycle 8 bars, 9.2s sweep + silence)
- * 23  voice-4      → atmo-02 (Byte Atmos Amin, 16 bars — trimmed from 19)
+ * 23  voice-4      → vocal-05 (VCT Legacy Amin, 4 bars — replaced atmo-02)
  */
 
 import type { QuantizeMode } from '../../musicClock'
@@ -90,12 +103,12 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
   // ── Index 2: beat-2 ────────────────────────────────────────────────────
   {
     id: 'deltaPack-beat-03', category: 'beat',
-    label: 'Byte Full',
-    audioFile: 'beats/beat-03.wav', sourceFile: 'Stickz - Byte Drum Loop 002 - 128BPM.wav',
-    bpm: 128, bars: 16, key: null,
-    notes: 'Full drum groove, 16 bars @ 128 BPM. Fuller variation than beat-01. Main groove anchor.',
-    volume: 0.88, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
-    energy: 0.85, harmonicGroup: 'neutral', transientDensity: 0.80, lowEndWeight: 0.72, mixabilityScore: 89,
+    label: 'Byte Hat B',
+    audioFile: 'beats/beat-03.wav', sourceFile: 'Stickz - Byte Hi-Hat Loop 005 - 128BPM.wav',
+    bpm: 128, bars: 4, key: null,
+    notes: 'Hi-hat percussion loop, 4 bars @ 128 BPM. Exact 7.500s duration — zero drift, zero leading pre-roll. No silence gaps throughout. Distinct rhythmic pattern from Byte Hat (HH 001) and Byte Accent (HH 002). Replaced full drum loops (Loop 003, Loop 004) which produced phase-correction hard snaps after pause/resume due to 30s loop length, creating audible double-beat. A 4-bar hi-hat loop eliminates phase sensitivity and complements the existing beat grid without kick competition.',
+    volume: 0.82, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
+    energy: 0.62, harmonicGroup: 'neutral', transientDensity: 0.70, lowEndWeight: 0.10, mixabilityScore: 96,
   },
   // ── Index 3: beat-3 ────────────────────────────────────────────────────
   {
@@ -140,12 +153,12 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
   // ── Index 7: melody-2 ─────────────────────────────────────────────────
   {
     id: 'deltaPack-melody-03', category: 'melody',
-    label: 'Byte Lead Am',
-    audioFile: 'melody/melody-03.wav', sourceFile: 'Stickz - Byte Synth Loop 003 - Lead Main.wav',
-    bpm: 128, bars: 16, key: 'A',
-    notes: 'Lead synth stem Loop 003, 16 bars @ 128 BPM, Amin (trimmed from 19 for sync). Expressively varied. Pairs with bass-03, atmo-02.',
-    volume: 0.71, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
-    energy: 0.70, harmonicGroup: 'Amin', transientDensity: 0.50, lowEndWeight: 0.25, mixabilityScore: 82,
+    label: 'Byte Pluck Am',
+    audioFile: 'melody/melody-03.wav', sourceFile: 'Stickz - Byte Synth Loop 003 - Break Pluck.wav',
+    bpm: 128, bars: 8, key: 'A',
+    notes: 'Pluck synth stem Loop 003, 8 bars @ 128 BPM, Amin. Replaced Lead Main (had 16.875s leading silence causing dropout + over-complex melody). Break Pluck adds rhythmic pluck texture with distinct character. ~0.5s natural pickup before first hit. Pairs with bass-03, atmo-02.',
+    volume: 0.78, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
+    energy: 0.62, harmonicGroup: 'Amin', transientDensity: 0.65, lowEndWeight: 0.18, mixabilityScore: 86,
   },
   // ── Index 8: effect-0 ─────────────────────────────────────────────────
   {
@@ -232,8 +245,8 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
     id: 'deltaPack-bass-03', category: 'bass',
     label: 'Byte Bass Am',
     audioFile: 'bass/bass-03.wav', sourceFile: 'Stickz - Byte Synth Loop 003 - Bass Main Layer.wav',
-    bpm: 128, bars: 16, key: 'A',
-    notes: 'Synth bass stem Loop 003, 16 bars @ 128 BPM, Amin (trimmed from 19 for sync). Growl bass layers. Pairs with melody-03.',
+    bpm: 128, bars: 8, key: 'A',
+    notes: 'Synth bass stem Loop 003, 8 bars @ 128 BPM, Amin. Silence-trimmed (source had 9-bar leading silence — dropout fix). 7 bars active + 1 bar phrase rest. Growl bass stabs. Pairs with melody-03.',
     volume: 0.67, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
     energy: 0.76, harmonicGroup: 'Amin', transientDensity: 0.42, lowEndWeight: 0.85, mixabilityScore: 82,
   },
@@ -260,22 +273,22 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
   // ── Index 19: voice-0 ─────────────────────────────────────────────────
   {
     id: 'deltaPack-vocal-01', category: 'voice',
-    label: 'VCT Chop C#',
-    audioFile: 'vocals/vocal-01.wav', sourceFile: 'Stickz VCT - Vocal Chop Loop 06 - 128BPM C#min.wav',
+    label: 'VCT Legacy C#',
+    audioFile: 'vocals/vocal-01.wav', sourceFile: 'Stickz VCT - Legacy Vocal Chop Loop 02 - 128BPM C#min.wav',
     bpm: 128, bars: 4, key: 'C#',
-    notes: 'Vocal chop loop 06, 4 bars @ 128 BPM, C#min. Short punchy chop. Cleanest vocal entry.',
-    volume: 0.58, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
-    energy: 0.55, harmonicGroup: 'C#min', transientDensity: 0.70, lowEndWeight: 0.10, mixabilityScore: 82,
+    notes: 'VCT Legacy vocal chop loop 02, 4 bars @ 128 BPM, C#min. Zero silence across entire 7.5s — most continuously dense loop in the VCT 128BPM set. Mean -11.9 dB. Replaces Loop 06 (choppier, lower energy). Pairs with bass-01, melody-01, atmo-01.',
+    volume: 0.56, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
+    energy: 0.70, harmonicGroup: 'C#min', transientDensity: 0.78, lowEndWeight: 0.10, mixabilityScore: 86,
   },
   // ── Index 20: voice-1 ─────────────────────────────────────────────────
   {
     id: 'deltaPack-vocal-02', category: 'voice',
-    label: 'VCT Chop G',
-    audioFile: 'vocals/vocal-02.wav', sourceFile: 'Stickz VCT - Vocal Chop Loop 08 - 128BPM Gmin.wav',
+    label: 'VCT Legacy Gm',
+    audioFile: 'vocals/vocal-02.wav', sourceFile: 'Stickz VCT - Legacy Vocal Chop Loop 13 - 128BPM Gmin.wav',
     bpm: 128, bars: 4, key: 'G',
-    notes: 'Vocal chop loop 08, 4 bars @ 128 BPM, Gmin. Rhythmic stutter chop. Pairs with bass-02, melody-02.',
-    volume: 0.56, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
-    energy: 0.53, harmonicGroup: 'Gmin', transientDensity: 0.68, lowEndWeight: 0.08, mixabilityScore: 81,
+    notes: 'VCT Legacy vocal chop loop 13, 4 bars @ 128 BPM, Gmin. Active from t=0, only micro gaps (19ms, 34ms at 1.27s/1.73s — rhythmic chop pattern). Mean -14.7 dB. Replaces Loop 08 (weaker stutter). Distinct timbre from Legacy-02. Pairs with bass-02, melody-02.',
+    volume: 0.54, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
+    energy: 0.62, harmonicGroup: 'Gmin', transientDensity: 0.72, lowEndWeight: 0.08, mixabilityScore: 84,
   },
   // ── Index 21: voice-2 ─────────────────────────────────────────────────
   {
@@ -297,15 +310,15 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
     volume: 0.50, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
     energy: 0.60, harmonicGroup: 'neutral', transientDensity: 0.25, lowEndWeight: 0.55, mixabilityScore: 85,
   },
-  // ── Index 23: voice-4 — atmosphere 2 ─────────────────────────────────
+  // ── Index 23: voice-4 — vocal 5 ─────────────────────────────────────
   {
-    id: 'deltaPack-atmo-02', category: 'atmosphere',
-    label: 'Byte Atmos Am',
-    audioFile: 'atmospheres/atmo-02.wav', sourceFile: 'Stickz - Byte Synth Loop 003 - Atmos FX.wav',
-    bpm: 128, bars: 16, key: 'A',
-    notes: 'Atmospheric FX stem Loop 003, 16 bars @ 128 BPM, Amin (trimmed from 19 for sync). Pads and ambience. Minimal low-end.',
-    volume: 0.48, playbackMode: 'loop', playbackQuantization: 'bar', allowDriftCorrection: false,
-    energy: 0.32, harmonicGroup: 'Amin', transientDensity: 0.15, lowEndWeight: 0.10, mixabilityScore: 87,
+    id: 'deltaPack-vocal-05', category: 'voice',
+    label: 'VCT Legacy Am',
+    audioFile: 'vocals/vocal-05.wav', sourceFile: 'Stickz VCT - Legacy Vocal Chop Loop 16 - 128BPM Amin.wav',
+    bpm: 128, bars: 4, key: 'A',
+    notes: 'VCT Legacy vocal chop loop 16, 4 bars @ 128 BPM, Amin. Dense vocal texture, continuous for 4.6s before first tiny 6ms gap. No leading silence. Harmonically pairs with bass-03, melody-03. Replaced atmosphere pad atmo-02 to complete the VOCALS group. Volume calibrated to -11.0 dB source (-1.4 dB vs vocal-02, -0.7 dB vs vocal-01).',
+    volume: 0.55, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
+    energy: 0.64, harmonicGroup: 'Amin', transientDensity: 0.72, lowEndWeight: 0.08, mixabilityScore: 83,
   },
 ]
 

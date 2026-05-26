@@ -125,14 +125,47 @@ const MASTER_BEAT_MS = MASTER_LOOP_MS / 16
 const MASTER_BAR_MS = MASTER_LOOP_MS / 4
 /**
  * How often the master phase lock monitor runs (ms).
- * 200 ms = catches drift within half a beat at 128 BPM before it becomes perceptible.
- * Soft correction (playbackRate) takes ~1–3 s to realign; hard snap fires at >80ms gap.
+ *
+ * Previous value: 200 ms (5 passes/sec × 24 pads = 120 currentTime reads/sec).
+ * Under CPU load this caused false-positive hard snaps and simultaneous playbackRate
+ * changes that briefly stalled the audio decoder, producing intermittent dropouts.
+ *
+ * 2 000 ms: one pass every 2 seconds.  At 128 BPM the natural drift of a natively
+ * looping HTMLAudioElement is well under 5 ms/cycle — detectable and correctable
+ * at this rate without thrashing the decoder.
  */
-const PHASE_CORRECTION_INTERVAL_MS = 200
-/** Soft-correction threshold: drifts above this trigger a playbackRate nudge. */
-const PHASE_SOFT_THRESHOLD_MS = 25
-/** Hard-snap threshold: drifts above this hard-seek audio.currentTime immediately. */
-const PHASE_HARD_THRESHOLD_MS = 80
+const PHASE_CORRECTION_INTERVAL_MS = 2_000
+/**
+ * Soft-correction threshold (ms).
+ * Drifts above this trigger a gentle ±2 % playbackRate nudge.
+ * Raised from 25 → 40 ms to absorb performance.now() jitter under CPU load.
+ */
+const PHASE_SOFT_THRESHOLD_MS = 40
+/**
+ * Hard-snap threshold (ms).
+ * Drifts above this hard-seek audio.currentTime to the expected position.
+ * Raised from 80 → 150 ms: hard snaps cause audible glitches; the higher bar
+ * prevents CPU-load false positives from triggering an unnecessary seek.
+ */
+const PHASE_HARD_THRESHOLD_MS = 150
+/**
+ * Loop-boundary exclusion zone (s).
+ * currentTime reads near 0 or near audio.duration are unreliable in some browsers.
+ * Skip phase correction for elements within this window of either boundary.
+ */
+const PHASE_BOUNDARY_GUARD_S = 0.3
+/**
+ * Post-play settle period (ms).
+ * After audio.play() is called, the browser may take 50–500 ms before the
+ * audio decoder actually starts advancing currentTime.  Phase correction fired
+ * during this window sees a large delta (expected vs. actual) and can trigger a
+ * hard snap that lands near a beat transient — producing an audible double-beat.
+ * We skip phase correction for any slot within PHASE_SETTLE_MS of its last play()
+ * call, giving every audio element time to stabilise before corrections begin.
+ * 3 000 ms > the 2 000 ms correction interval, so at least one pass is always
+ * skipped after every play/resume event.
+ */
+const PHASE_SETTLE_MS = 3_000
 
 type PerformanceCategory = 'beat' | 'bass' | 'melody' | 'fx' | 'voice'
 
@@ -513,23 +546,47 @@ const CURATED_PACK_IDS = new Set<ActivePackId>([
   'cyberpunk-pack-1',
 ])
 
-/** Ordered list of pack entries shown in the UI dropdown. */
+/**
+ * The single active pack available to normal gameplay.
+ * Delta Pack is the canonical reference implementation.
+ */
+const PLAYABLE_PACK_IDS = new Set<ActivePackId>(['delta-pack'])
+
+/**
+ * Packs that are archived — fully preserved in AUDIO_PACKS for replay
+ * backwards-compatibility but hidden from the player-facing UI.
+ */
+const ARCHIVED_PACK_IDS = new Set<ActivePackId>([
+  'cyberpunk-pack-1',
+  'core-mix-pack-alpha',
+  'new-pack-alpha',
+  'bravo-pack',
+])
+
+/**
+ * If a shared URL or old recording references an archived or unknown pack,
+ * silently fall back to Delta Pack so the app never crashes.
+ *
+ * PLAYABLE_PACK_IDS  — the exact set of packs shown in the player dropdown.
+ * ARCHIVED_PACK_IDS  — packs that still have data in AUDIO_PACKS (safe for
+ *                      replay audio) but are redirected to Delta Pack for UI.
+ */
+function toPlayablePackId(id: string): ActivePackId {
+  if (PLAYABLE_PACK_IDS.has(id as ActivePackId)) return id as ActivePackId
+  if (ARCHIVED_PACK_IDS.has(id as ActivePackId)) return 'delta-pack'
+  if (id in AUDIO_PACKS) return id as ActivePackId
+  return 'delta-pack'
+}
+
+/**
+ * Pack entries shown in the player-facing PACK dropdown.
+ * Only Delta Pack appears here.  All other packs are accessible exclusively
+ * through the DEV diagnostics drawer (which reads AUDIO_PACKS directly).
+ */
 const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
-    packs: [
-      'delta-pack',
-      'bravo-pack',
-      'new-pack-alpha',
-      'core-mix-pack-alpha',
-      'trance-curated-pack-1',
-      'beats-box-curated-pack-1',
-      'cyberpunk-pack-1',
-    ],
-  },
-  {
-    group: 'Advanced — Raw Packs',
-    packs: ['trance-pack-1', 'beats-box-pack-1'],
+    packs: ['delta-pack'],
   },
 ]
 
@@ -664,7 +721,11 @@ const NEW_PACK_ALPHA_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
 /**
  * Delta Pack — 128 BPM / Multi-key
  * Row 1: BEATS(5) | BASS(4) | MELODY(3)
- * Row 2: LAYERS(3: melody-04+atmo-01+atmo-02) | VOCALS(3) | FX(3) | TRANSITIONS(3)
+ * Row 2: LAYERS(2: melody-04+atmo-01) | VOCALS(5: voice-0..4) | FX(3) | TRANSITIONS(2)
+ *
+ * voice-3 and voice-4 are both vocal game pads and must appear together in VOCALS.
+ * voice-3 was previously misplaced in TRANSITIONS (far-right).
+ * voice-4 was previously misplaced in LAYERS.
  */
 const DELTA_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
   {
@@ -676,10 +737,10 @@ const DELTA_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
   },
   {
     groups: [
-      { label: 'LAYERS',      color: '#5c66d4', padIds: ['melody-3', 'melody-4', 'voice-4'] },
-      { label: 'VOCALS',      color: '#c03a7a', padIds: ['voice-0', 'voice-1', 'voice-2'] },
+      { label: 'LAYERS',      color: '#5c66d4', padIds: ['melody-3', 'melody-4'] },
+      { label: 'VOCALS',      color: '#c03a7a', padIds: ['voice-0', 'voice-1', 'voice-2', 'voice-3', 'voice-4'] },
       { label: 'FX',          color: '#2aae85', padIds: ['effect-0', 'effect-1', 'effect-2'] },
-      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['effect-3', 'percussion-4', 'voice-3'] },
+      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['effect-3', 'percussion-4'] },
     ],
   },
 ]
@@ -1560,7 +1621,7 @@ function App() {
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
-  const [activePackId, setActivePackId] = useState<ActivePackId>('trance-curated-pack-1')
+  const [activePackId, setActivePackId] = useState<ActivePackId>('delta-pack')
   const [mixToast, setMixToast] = useState<string | null>(null)
   const [mixRecordingState, setMixRecordingState] = useState<MixRecordingState>('idle')
   /** RecordedMix finalised from the user's own session (enables SHARE + REPLAY). */
@@ -1606,6 +1667,13 @@ function App() {
    */
   const pauseOffsetsRef = useRef<Map<number, number>>(new Map())
   const pauseClockElapsedRef = useRef<number>(0)
+  /**
+   * Per-slot timestamp (performance.now()) of the most recent audio.play() call.
+   * Used by runPhaseCorrectionPass to skip corrections during the post-play
+   * settle period (PHASE_SETTLE_MS), preventing hard snaps while the browser's
+   * audio decoder is still starting up.
+   */
+  const slotLastPlayTimeRef = useRef<Map<number, number>>(new Map())
   // ── Musical clock & quantization ──────────────────────────────────────────
   /** Live musical clock — updated in startOrRestartLoops and on BPM change. */
   const musicalClockRef = useRef<MusicalClock>(makeClock(DEFAULT_BPM, MASTER_LOOP_MS))
@@ -1681,7 +1749,7 @@ function App() {
     masterMutedRef.current = sanitized.pause
     mutedSlotsRef.current = new Set(sanitized.m)
     isPlayingRef.current = sanitized.play
-    setActivePackId(sanitized.p as ActivePackId)
+    setActivePackId(toPlayablePackId(sanitized.p))
     setVolume(sanitized.vol)
     setMasterMuted(sanitized.pause)
     setMutedSlots(new Set(sanitized.m))
@@ -1700,7 +1768,7 @@ function App() {
     masterMutedRef.current = false
     mutedSlotsRef.current = new Set(init.muted)
     isPlayingRef.current = false
-    setActivePackId(init.pack as ActivePackId)
+    setActivePackId(toPlayablePackId(init.pack))
     setVolume(init.vol)
     setBpm(init.bpm)
     setMasterMuted(false)
@@ -1760,7 +1828,9 @@ function App() {
   }, [bpm])
 
   // Recompute per-slot category gain staging whenever slots or pack change.
-  // computeCategoryGains returns per-category multipliers; we then map to per-slot.
+  // computeEnhancedCategoryGains returns per-category multipliers; we then map to
+  // per-slot and immediately apply the new gains to any active audio elements so
+  // existing pads reflect the new mix balance without waiting for a volume event.
   useEffect(() => {
     const counts: Partial<Record<string, number>> = {}
     const slotCategories: Array<{ slot: number; category: string }> = []
@@ -1778,6 +1848,21 @@ function App() {
     categoryGainRef.current.clear()
     for (const { slot, category } of slotCategories) {
       categoryGainRef.current.set(slot, categoryMultipliers.get(category) ?? 1.0)
+    }
+
+    // Immediately propagate new gains to playing audio elements.
+    // Without this, existing pads keep their pre-change volume until the next
+    // explicit volume event — causing a brief gain inconsistency after a new pad
+    // bumps a category past its attenuation threshold.
+    if (isPlayingRef.current && !masterMutedRef.current) {
+      const master = normalizedVolume(volumeRef.current)
+      assignedAudioRef.current.forEach((audio, slot) => {
+        if (mutedSlotsRef.current.has(slot)) return
+        const padVol = padVolumeRef.current.get(slot) ?? 1.0
+        const categoryGain = categoryGainRef.current.get(slot) ?? 1.0
+        const eff = Math.max(0, Math.min(0.95, master * padVol * categoryGain))
+        if (isFinite(eff)) audio.volume = eff
+      })
     }
   }, [slots, activePackId])
 
@@ -2089,6 +2174,66 @@ function App() {
   }, [slots, activePackId])
 
   /**
+   * DEV-only: snapshot the full runtime audio state for stability diagnostics.
+   * Logs active pad count, effective volume per slot, AudioContext state,
+   * compressor reduction, and flags any invalid or overloaded values.
+   * Called at session start and from the DEV button for on-demand inspection.
+   */
+  const logFullMixDiagnostics = useCallback(() => {
+    if (!import.meta.env.DEV) return
+
+    const ctxState   = audioCtxRef.current?.state ?? 'none'
+    const padCount   = assignedAudioRef.current.size
+    const master     = normalizedVolume(volumeRef.current)
+    const rows: Array<Record<string, unknown>> = []
+    let overloadCount = 0
+
+    assignedAudioRef.current.forEach((audio, slot) => {
+      const padVol      = padVolumeRef.current.get(slot) ?? 1.0
+      const catGain     = categoryGainRef.current.get(slot) ?? 1.0
+      const eff         = master * padVol * catGain
+      const clamped     = Math.max(0, Math.min(0.95, isFinite(eff) ? eff : 0))
+      const isOverload  = eff > 0.95
+      const isNaN_      = !isFinite(eff)
+      const isZero      = eff <= 0
+      if (isOverload) overloadCount++
+      rows.push({
+        slot,
+        master:    master.toFixed(3),
+        padVol:    padVol.toFixed(3),
+        catGain:   catGain.toFixed(3),
+        effRaw:    eff.toFixed(3),
+        effClamped: clamped.toFixed(3),
+        actual:    audio.volume.toFixed(3),
+        paused:    audio.paused,
+        rate:      audio.playbackRate,
+        ctTime:    audio.currentTime.toFixed(2),
+        dur:       audio.duration?.toFixed(2) ?? '—',
+        flags:     [isOverload && 'OVERLOAD', isNaN_ && 'NAN', isZero && 'ZERO'].filter(Boolean).join(' ') || 'ok',
+      })
+    })
+
+    console.group('[mix-diag] full-mix stability snapshot')
+    console.log('pads:', padCount, '| masterVol:', volumeRef.current, '| ctxState:', ctxState)
+    if (masterCompressorRef.current) {
+      const c = masterCompressorRef.current
+      console.log('compressor:', {
+        threshold: c.threshold.value,
+        knee:      c.knee.value,
+        ratio:     c.ratio.value,
+        attack:    c.attack.value,
+        release:   c.release.value,
+        reduction: c.reduction,
+      })
+    }
+    if (overloadCount > 0) {
+      console.warn(`[mix-diag] ${overloadCount} pad(s) computed eff > 0.95 — check gain staging`)
+    }
+    if (rows.length > 0) console.table(rows)
+    console.groupEnd()
+  }, [])
+
+  /**
    * Start one assigned slot once.
    * Loop pads use native audio.loop and are NOT restarted on master cycle ticks.
    * One-shots play a single time and stop naturally.
@@ -2119,6 +2264,7 @@ function App() {
       if (targetVol <= 0 && !isOneShot && isPlayingRef.current && !masterMutedRef.current) {
         audio.volume = 0
         if (audio.paused) {
+          slotLastPlayTimeRef.current.set(slot, performance.now())
           void audio.play().catch((err) =>
             console.warn('[audio] silent loop play failed', { slot, err }),
           )
@@ -2138,6 +2284,10 @@ function App() {
       if (shouldRestart) {
         audio.currentTime = 0
         audio.volume = 0
+        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+          console.log('[beat3] currentTime reset to 0, play() queued', { slot })
+        }
+        slotLastPlayTimeRef.current.set(slot, performance.now())
         void audio
           .play()
           .then(() => {
@@ -2145,6 +2295,9 @@ function App() {
               scheduleGainRamp(audio, targetVol)
             } else {
               audio.volume = targetVol
+            }
+            if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+              console.log('[beat3] play() resolved', { slot, currentTime: audio.currentTime.toFixed(3) })
             }
             console.log('[audio] slot started', {
               slot,
@@ -2193,6 +2346,18 @@ function App() {
         elapsedMs: Math.round(performance.now() - musicalClockRef.current.originMs),
       })
     }
+    // ── AudioContext heartbeat guard ─────────────────────────────────────────
+    // Backup for the onstatechange handler: catches any suspension that the
+    // event listener misses (e.g. browser-specific autoplay policy enforcement
+    // that fires between onstatechange and the next user gesture).
+    if (
+      audioCtxRef.current &&
+      audioCtxRef.current.state === 'suspended' &&
+      isPlayingRef.current &&
+      !masterMutedRef.current
+    ) {
+      void audioCtxRef.current.resume().catch(() => undefined)
+    }
   }, [])
 
   /**
@@ -2219,20 +2384,59 @@ function App() {
 
     const elapsedMs = performance.now() - originMs
 
+    let softCount = 0
+    let hardCount = 0
+    let skippedCount = 0
+
     assignedAudioRef.current.forEach((audio, slot) => {
       // One-shots are exempt from phase correction
       if (padOneShotRef.current.get(slot)) return
       // Skip paused elements (true-transport pause or mid-resume)
       if (audio.paused) return
 
+      // ── Post-play settle period ─────────────────────────────────────────────
+      // After audio.play() is called the browser may take 50–500 ms before
+      // currentTime starts advancing.  Phase correction fired during this window
+      // sees a large (expected – actual) delta and can hard-snap the file to a
+      // new position that lands on a beat transient — producing an audible
+      // double-beat.  Skip this slot until PHASE_SETTLE_MS have elapsed.
+      const lastPlayTime = slotLastPlayTimeRef.current.get(slot) ?? 0
+      if (performance.now() - lastPlayTime < PHASE_SETTLE_MS) {
+        skippedCount++
+        return
+      }
+
       const loopDurationS = audio.duration
       if (!isFinite(loopDurationS) || loopDurationS < 0.1) return
+
+      // ── Loop-boundary exclusion zone ───────────────────────────────────────
+      // currentTime reads within PHASE_BOUNDARY_GUARD_S of either loop boundary
+      // are unreliable in some browsers (can return 0 or duration before the
+      // native loop seek completes).  Skip these to prevent false hard-snaps.
+      const ct = audio.currentTime
+      if (ct < PHASE_BOUNDARY_GUARD_S || ct > loopDurationS - PHASE_BOUNDARY_GUARD_S) {
+        skippedCount++
+        return
+      }
+
+      // ── Skip elements under allowDriftCorrection playbackRate adjustment ───
+      // Those elements intentionally run at a rate != 1.0 to compensate for
+      // a slightly mis-timed source file.  Phase correction must not fight that.
+      // If playbackRate is a fixed non-1.0 drift-correction value (not a phase
+      // soft-nudge from a previous pass), leave the element alone.  We identify
+      // drift-correction rates as exact values outside the phase-nudge band.
+      const rate = audio.playbackRate
+      const isDriftCorrected = rate !== 1.0 && rate !== 1.02 && rate !== 0.98
+      if (isDriftCorrected) { skippedCount++; return }
 
       const loopDurationMs = loopDurationS * 1000
 
       // Expected position based on session origin
       const expectedS = (elapsedMs % loopDurationMs) / 1000
-      const actualS   = audio.currentTime
+      const actualS   = ct
+
+      // NaN guard — malformed duration or currentTime
+      if (!isFinite(expectedS) || !isFinite(actualS)) return
 
       // Delta: positive = audio is BEHIND master (speed up), negative = AHEAD (slow down).
       // Unwrap across the loop boundary so end-of-loop vs start-of-loop comparisons
@@ -2243,13 +2447,21 @@ function App() {
 
       const absDeltaMs = Math.abs(delta) * 1000
 
+      // DEV: log phase correction activity for Beat 3
+      if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3 && absDeltaMs > 5) {
+        console.log('[beat3] phase correction check', {
+          slot,
+          ct: ct.toFixed(3),
+          expectedS: expectedS.toFixed(3),
+          deltaMs: (delta * 1000).toFixed(1),
+          msSincePlay: Math.round(performance.now() - lastPlayTime),
+        })
+      }
+
       if (absDeltaMs < PHASE_SOFT_THRESHOLD_MS) {
         // Within tolerance — restore playbackRate if a previous pass adjusted it
         if (audio.playbackRate !== 1.0) {
           audio.playbackRate = 1.0
-          if (import.meta.env.DEV) {
-            console.debug('[phase] realigned — rate restored', { slot, absDeltaMs: absDeltaMs.toFixed(1) })
-          }
         }
         return
       }
@@ -2257,27 +2469,47 @@ function App() {
       if (absDeltaMs <= PHASE_HARD_THRESHOLD_MS) {
         // Soft correction: nudge playbackRate ±2% until the element drifts back into phase.
         // At ±2% the pitch shift is 0.34 semitones — below the ~1-semitone JND threshold.
-        // At a 50ms deficit, 2% speed-up closes the gap in ~2.5 s of playback.
-        const rate = delta > 0 ? 1.02 : 0.98
-        if (audio.playbackRate !== rate) audio.playbackRate = rate
-        if (import.meta.env.DEV) {
-          console.debug('[phase] soft correction', {
-            slot, deltaMs: (delta * 1000).toFixed(1), rate,
-          })
+        // At 40ms deficit, 2% speed-up closes the gap in ~2 s of playback.
+        const nudge = delta > 0 ? 1.02 : 0.98
+        if (audio.playbackRate !== nudge) {
+          audio.playbackRate = nudge
+          if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+            console.log('[beat3] phase soft nudge', { slot, nudge, deltaMs: (delta * 1000).toFixed(1) })
+          }
         }
+        softCount++
         return
       }
 
       // Hard snap: gap is too large for rate correction to close in a musical timeframe.
       // Seek directly to the expected position, then return rate to 1.
+      if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+        console.warn('[beat3] phase HARD SNAP', {
+          slot,
+          deltaMs: (delta * 1000).toFixed(1),
+          from: ct.toFixed(3),
+          to: expectedS.toFixed(3),
+        })
+      }
       audio.currentTime = expectedS
       audio.playbackRate = 1.0
+      hardCount++
       console.warn('[phase] hard snap', {
         slot,
         deltaMs: (delta * 1000).toFixed(1),
         snappedToS: expectedS.toFixed(3),
       })
     })
+
+    if (import.meta.env.DEV && (softCount > 0 || hardCount > 0)) {
+      console.debug('[phase] correction pass', {
+        elapsedMs: Math.round(elapsedMs),
+        soft: softCount,
+        hard: hardCount,
+        skipped: skippedCount,
+        total: assignedAudioRef.current.size,
+      })
+    }
   }, [])
 
   const startOrRestartLoops = useCallback(() => {
@@ -2300,8 +2532,14 @@ function App() {
     console.log('[master] session started', {
       loopMs: MASTER_LOOP_MS,
       phaseCorrectionMs: PHASE_CORRECTION_INTERVAL_MS,
+      pads: assignedAudioRef.current.size,
     })
-  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock, runPhaseCorrectionPass])
+    // DEV: print full gain-chain snapshot after all pads start
+    if (import.meta.env.DEV) {
+      // Small delay so audio elements have time to set their initial volumes
+      window.setTimeout(logFullMixDiagnostics, 200)
+    }
+  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock, runPhaseCorrectionPass, logFullMixDiagnostics])
 
   /**
    * Lazily create a shared AudioContext + DynamicsCompressor chain.
@@ -2316,21 +2554,48 @@ function App() {
       if (!audioCtxRef.current) {
         const ctx = new AudioContext()
         const comp = ctx.createDynamicsCompressor()
-        // Glue compression: gentle ratio preserves punch; faster release prevents pumping.
-        // Ratio 2.5:1 gives ~6dB of GR at 0dBFS input (-18dB threshold) — transparent
-        // enough for 7 concurrent performers without the hard pumping of 6:1.
-        // Attack 10ms: lets kick/snare transients through before compression clamps down.
-        // Release 200ms: faster than 300ms so the compressor resets between beats at 128 BPM
-        //   (one beat = 469ms — compressor fully releases before the next hit).
-        comp.threshold.setValueAtTime(-18, ctx.currentTime)
-        comp.knee.setValueAtTime(20, ctx.currentTime)
-        comp.ratio.setValueAtTime(2.5, ctx.currentTime)
-        comp.attack.setValueAtTime(0.010, ctx.currentTime)
-        comp.release.setValueAtTime(0.20, ctx.currentTime)
+
+        // ── Compressor settings for full-mix stability ─────────────────────
+        // Previous settings (threshold=-18, knee=20, ratio=2.5) triggered heavy
+        // gain reduction even on quiet passages with 5+ summed sources, causing
+        // audible pumping as the GR changed between beats.
+        //
+        // New settings: safety-net-only compression — protects against digital
+        // clipping while staying transparent during normal multi-pad playback.
+        //   threshold=-12  Only engages on peaks (pre-gain-staged content sits
+        //                  well below this level in normal operation).
+        //   knee=30        Very soft knee — gradual onset, no hard clamping.
+        //   ratio=2.0:1    Minimal gain reduction — ~2 dB GR at hard peaks.
+        //   attack=5ms     Still catches fast kick transients cleanly.
+        //   release=250ms  Slightly slower: prevents breathing between beats at
+        //                  128 BPM while releasing fully within one quarter-note.
+        comp.threshold.setValueAtTime(-12, ctx.currentTime)
+        comp.knee.setValueAtTime(30, ctx.currentTime)
+        comp.ratio.setValueAtTime(2.0, ctx.currentTime)
+        comp.attack.setValueAtTime(0.005, ctx.currentTime)
+        comp.release.setValueAtTime(0.25, ctx.currentTime)
         comp.connect(ctx.destination)
         audioCtxRef.current = ctx
         masterCompressorRef.current = comp
-        console.log('[audio] compressor chain created')
+
+        // ── AudioContext auto-resume guard ─────────────────────────────────
+        // Browsers auto-suspend the AudioContext after a period of no user
+        // interaction (even during active playback).  Listening to onstatechange
+        // lets us resume immediately rather than waiting for the next user event.
+        ctx.onstatechange = () => {
+          if (ctx.state === 'suspended' && isPlayingRef.current && !masterMutedRef.current) {
+            void ctx.resume().catch((e) =>
+              console.warn('[audio] ctx auto-resume failed', e),
+            )
+          }
+          if (import.meta.env.DEV) {
+            console.log('[audio] ctx state changed →', ctx.state)
+          }
+        }
+
+        console.log('[audio] compressor chain created', {
+          threshold: -12, knee: 30, ratio: 2.0, attack: 0.005, release: 0.25,
+        })
       }
       return { ctx: audioCtxRef.current, compressor: masterCompressorRef.current! }
     } catch (e) {
@@ -2343,6 +2608,9 @@ function App() {
     const audio = assignedAudioRef.current.get(slotIndex)
     if (!audio) return
     clearAssignedDebugInterval(slotIndex)
+    if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+      console.log('[beat3] dispose', { slot: slotIndex })
+    }
     assignedAudioRef.current.delete(slotIndex)
     stopAssignedAudioElement(audio)
     // Disconnect and remove the Web Audio source node for this slot
@@ -2353,6 +2621,7 @@ function App() {
     }
     padVolumeRef.current.delete(slotIndex)
     padOneShotRef.current.delete(slotIndex)
+    slotLastPlayTimeRef.current.delete(slotIndex)
     // Cancel any pending quantize start timer for this slot
     const qTimer = quantizeTimersRef.current.get(slotIndex)
     if (qTimer !== undefined) {
@@ -2394,6 +2663,14 @@ function App() {
       audio.onpause = () => console.log('[assigned] paused', slotIndex)
       audio.onended = () => console.log('[assigned] ended', slotIndex)
       audio.onerror = (event) => console.log('[assigned] error', slotIndex, event)
+
+      // DEV: tag Beat 3 elements for lifecycle tracing
+      if (import.meta.env.DEV && pad.id === 'beat-2') {
+        ;(audio as { __beat3?: boolean }).__beat3 = true
+        audio.onpause = () => console.log('[beat3] audio paused', { slot: slotIndex, ct: audio.currentTime.toFixed(3) })
+        console.log('[beat3] audio element created', { slot: slotIndex, padId: pad.id, url })
+      }
+
       assignedAudioRef.current.set(slotIndex, audio)
 
       // Route through master compressor (safe — skipped if Web Audio unavailable)
@@ -2744,6 +3021,9 @@ function App() {
       pauseOffsetsRef.current.clear()
       assignedAudioRef.current.forEach((audio, slot) => {
         pauseOffsetsRef.current.set(slot, audio.currentTime)
+        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+          console.log('[beat3] transport FREEZE', { slot, savedTime: audio.currentTime.toFixed(3) })
+        }
         audio.volume = 0
         audio.pause()
       })
@@ -2778,6 +3058,13 @@ function App() {
         const storedTime = pauseOffsetsRef.current.get(slot)
         if (storedTime !== undefined) {
           // Pad was playing when paused — restore its exact position.
+          if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+            console.log('[beat3] transport RESUME restoring currentTime', {
+              slot,
+              from: audio.currentTime.toFixed(3),
+              to: storedTime.toFixed(3),
+            })
+          }
           audio.currentTime = storedTime
         } else if (audio.duration > 0) {
           // Pad was added while paused — clock-estimate its position so it
@@ -2791,9 +3078,19 @@ function App() {
       //            All play() calls are issued without any await between them
       //            so the browser receives them within the same task and can
       //            align them to the same audio render quantum (~3 ms frame).
+      //            Record the play timestamp BEFORE issuing play() so the
+      //            settle-period guard in runPhaseCorrectionPass sees the
+      //            correct base time even if play() resolves asynchronously.
       assignedAudioRef.current.forEach((audio, slot) => {
         const slotMuted = mutedSlotsRef.current.has(slot)
         audio.volume = slotMuted ? 0 : padEffVol(slot)
+        slotLastPlayTimeRef.current.set(slot, performance.now())
+        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
+          console.log('[beat3] transport RESUME play() queued', {
+            slot,
+            restoredTime: pauseOffsetsRef.current.get(slot)?.toFixed(3),
+          })
+        }
         void audio.play().catch((err) =>
           console.warn('[transport] resume play failed', { slot, err }),
         )
@@ -2820,6 +3117,7 @@ function App() {
     clearAllAssignedDebugIntervals()
     assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
+    slotLastPlayTimeRef.current.clear()
     console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
     masterMutedRef.current = false
     setMasterMuted(false)
@@ -3084,7 +3382,7 @@ function App() {
           break
         }
         case 'pk': {
-          if (event.pack) handlePackChange(event.pack as ActivePackId)
+          if (event.pack) handlePackChange(toPlayablePackId(event.pack))
           break
         }
         default:
@@ -3120,7 +3418,7 @@ function App() {
     if (!mix) return
 
     const { init, ev, dur } = mix
-    const initPack = init.pack as ActivePackId
+    const initPack = toPlayablePackId(init.pack)
 
     // Guard against zero/invalid duration to avoid infinite playback
     if (typeof dur !== 'number' || !Number.isFinite(dur) || dur < 0) {
