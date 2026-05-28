@@ -27,9 +27,9 @@ export function IntroScreen({ exiting, onStart }: IntroScreenProps) {
       </div>
 
       <div className="intro-screen__content">
-        <p className="intro-screen__eyebrow">Incredibox-style loop lab</p>
+        <p className="intro-screen__eyebrow">Loop lab</p>
         <h1 id="intro-title" className="intro-screen__title">
-          INCredi<span className="intro-screen__title-accent">BOY</span>
+          INCREDI<span className="intro-screen__title-accent">MIX</span>
         </h1>
         <p id="intro-tagline" className="intro-screen__tagline">
           Build synchronized street mixes. Perform, mute, and share in seconds.

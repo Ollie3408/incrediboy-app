@@ -3522,7 +3522,7 @@ function App() {
       {/* CONTROL BAR — logo, mix controls, transport */}
       <motion.div className="control-bar">
         <div className="control-bar__left">
-          <h1 className="control-bar__logo">INCrediBOY</h1>
+          <h1 className="control-bar__logo">INCREDIMIX</h1>
         </div>
         <div className="control-bar__mixes">
           {/* ── Recording control: cycles through idle → recording → finalizing → saved ── */}
