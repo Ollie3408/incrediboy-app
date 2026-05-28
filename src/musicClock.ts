@@ -157,42 +157,74 @@ export function computePlaybackRate(
   return Math.max(0.98, Math.min(1.02, ratio))
 }
 
-// ── Micro fade-in ─────────────────────────────────────────────────────────────
+// ── Micro fade-in / gain ramp ─────────────────────────────────────────────────
 
 /**
- * Ramps `audio.volume` from 0 → `targetVol` over `durationMs` (default 20 ms).
- * Prevents click/pop artifacts at loop start and quantized entry points.
- *
- * HOW TO ADJUST:
- *   • Longer durationMs → smoother, more audible fade-in
- *   • Shorter durationMs → tighter transient, less fade
- *   • 12–25 ms is the sweet spot for click prevention without audible fade
+ * Per-element ramp handle.  When a new ramp starts on an element, any previous
+ * ramp is cancelled by setting its handle's `cancelled` flag — preventing two
+ * concurrent RAF loops from fighting over `audio.volume` (which produced audible
+ * clicks, dips, and momentary silence in earlier versions).
  */
+const _activeRamps = new WeakMap<HTMLAudioElement, { cancelled: boolean }>()
+
+/** Returns true if a gain ramp is currently running on this element. */
+export function isRampActive(audio: HTMLAudioElement): boolean {
+  return _activeRamps.has(audio)
+}
+
+/** Cancel any in-flight ramp for this element without changing its volume. */
+export function cancelGainRamp(audio: HTMLAudioElement): void {
+  const handle = _activeRamps.get(audio)
+  if (handle) {
+    handle.cancelled = true
+    _activeRamps.delete(audio)
+  }
+}
+
 /**
- * Fade the audio element from 0 to targetVol over durationMs using
- * requestAnimationFrame — frame-aligned, zero timer pollution.
+ * Ramp `audio.volume` from its current value to `targetVol` over `durationMs`.
  *
- * Previous implementation used 5 concurrent setInterval timers (one per step at
- * 4 ms intervals).  With 7+ pads starting simultaneously that created 35 competing
- * 4 ms callbacks that starved the audio render budget and caused start-up stutters.
- * RAF is coalesced by the browser into a single frame callback per element and has
- * no adverse effect on the audio thread scheduling.
+ * Key behaviours vs. the previous implementation:
+ *   • Cancels any in-flight ramp on the same element before starting a new one,
+ *     preventing two RAF loops from simultaneously writing conflicting values.
+ *   • Starts from the CURRENT volume rather than hard-resetting to 0, so calling
+ *     code that has already set volume=0 still produces a clean 0→target ramp,
+ *     but a re-triggered ramp (e.g. rapid mute/unmute) starts from wherever the
+ *     volume currently is — eliminating the jarring silent dip.
+ *   • Callers that want a 0→target fade must set `audio.volume = 0` themselves
+ *     before calling (all existing call sites in App.tsx already do this).
+ *
+ * RAF is coalesced by the browser into a single frame callback per element and
+ * has no adverse effect on the audio thread scheduling.
  */
 export function scheduleGainRamp(
   audio: HTMLAudioElement,
   targetVol: number,
   durationMs = 40,
 ): void {
+  // Cancel any previous ramp on this element
+  cancelGainRamp(audio)
+
   if (targetVol <= 0) {
     audio.volume = 0
     return
   }
-  audio.volume = 0
+
+  const handle = { cancelled: false }
+  _activeRamps.set(audio, handle)
+
+  const startVol = audio.volume          // Ramp from current, not from 0
   const startMs = performance.now()
+
   const tick = () => {
+    if (handle.cancelled) return         // Superseded — stop immediately
     const progress = Math.min(1, (performance.now() - startMs) / durationMs)
-    audio.volume = targetVol * progress
-    if (progress < 1) requestAnimationFrame(tick)
+    audio.volume = startVol + (targetVol - startVol) * progress
+    if (progress < 1) {
+      requestAnimationFrame(tick)
+    } else {
+      _activeRamps.delete(audio)         // Clean up when complete
+    }
   }
   requestAnimationFrame(tick)
 }

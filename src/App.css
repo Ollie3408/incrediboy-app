@@ -3,10 +3,10 @@
    ============================================================================= */
 
 .incrediboy {
-  --nav-h: 32px;
+  --nav-h: 0px;
   --bar-h: 50px;
   --panel-h: clamp(148px, 20dvh, 176px);
-  --stage-inner-h: calc(100dvh - var(--nav-h) - var(--bar-h) - var(--panel-h));
+  --stage-inner-h: calc(100dvh - var(--bar-h) - var(--panel-h));
   /* Wider gap prevents animation translateX (±9 px) from causing visual overlap.
      The gap must be > max(translateX) × 2 = 18 px. */
   --slot-gap: clamp(10px, 1.4vw, 20px);
@@ -22,7 +22,7 @@
   --bar-period: 2400ms;
   --nav-bg: #000000;
   --bar-bg: #ffffff;
-  --stage-bg: #5a616b;
+  --stage-bg: #3a3530;
   --panel-bg: #ffffff;
   --ink: #111111;
   --text-nav: #ffffff;
@@ -43,7 +43,7 @@
 
 .incrediboy__main {
   display: grid;
-  grid-template-rows: var(--nav-h) minmax(var(--bar-h), auto) minmax(0, 1fr);
+  grid-template-rows: minmax(var(--bar-h), auto) minmax(0, 1fr);
   height: 100dvh;
   max-height: 100dvh;
   min-height: 0;
@@ -365,94 +365,6 @@
   .intro-screen__content {
     padding: 1rem 0.85rem;
   }
-}
-
-/* ── Black top navigation ── */
-.top-nav {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  padding: 0 clamp(12px, 2vw, 28px);
-  background: var(--nav-bg);
-  color: var(--text-nav);
-  z-index: 30;
-}
-
-.top-nav__spacer {
-  width: 1px;
-}
-
-.top-nav__links {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: clamp(0.5rem, 2.2vw, 1.75rem);
-}
-
-.top-nav__link {
-  background: none;
-  border: none;
-  color: var(--text-nav);
-  font-size: 0.58rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  padding: 0;
-  opacity: 0.92;
-}
-
-.top-nav__link:hover {
-  opacity: 1;
-}
-
-.top-nav__right {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.top-nav__social {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: none;
-  background: #ffffff;
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.top-nav__social-icon {
-  font-size: 0.45rem;
-  font-weight: 800;
-  color: #111;
-  line-height: 1;
-}
-
-.top-nav__flag {
-  border: none;
-  background: none;
-  font-size: 0.85rem;
-  cursor: pointer;
-  padding: 0 0.1rem;
-  line-height: 1;
-}
-
-.top-nav__lang {
-  border: none;
-  background: none;
-  cursor: pointer;
-  padding: 0;
-  margin-left: 0.1rem;
-}
-
-.top-nav__lang svg {
-  width: 18px;
-  height: 18px;
-  stroke: #ddd;
 }
 
 /* ── White control strip ── */
@@ -929,7 +841,7 @@
 
 .incrediboy__hint {
   position: fixed;
-  top: calc(var(--nav-h) + var(--bar-h) + 6px);
+  top: calc(var(--bar-h) + 6px);
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
@@ -942,7 +854,7 @@
   pointer-events: none;
 }
 
-/* Dark character stage — centered, tall figures */
+/* Brick-graffiti stage wall — real photo asset */
 .stage {
   position: relative;
   display: flex;
@@ -956,14 +868,16 @@
   overflow-x: hidden;
   overflow-y: visible;
   box-sizing: border-box;
-  background:
-    /* ── Overhead spotlight cone — warm amber from top-centre ── */
-    radial-gradient(ellipse 55% 50% at 50% 0%, rgba(230, 100, 55, 0.11) 0%, transparent 100%),
-    radial-gradient(ellipse at center bottom, rgba(7, 5, 4, 0.42), transparent 52%),
-    linear-gradient(180deg, #171012 0%, #251719 58%, #0f0d0f 100%);
+  background-image: url('/backgrounds/brick-graffiti-wall.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   isolation: isolate;
 }
 
+/* Subtle dark overlay for character readability — darkens edges, preserves
+   the open centre where characters stand.  Uses a vignette that avoids
+   flattening the wall texture in the middle third of the image. */
 .stage::before {
   content: '';
   position: absolute;
@@ -971,51 +885,35 @@
   z-index: 0;
   pointer-events: none;
   background:
-    linear-gradient(31deg, transparent 18%, rgba(9, 5, 4, 0.36) 18.4%, transparent 19.1%),
-    linear-gradient(143deg, transparent 66%, rgba(255, 235, 205, 0.035) 66.3%, transparent 67%),
-    radial-gradient(circle at 16% 28%, rgba(255, 182, 120, 0.08) 0 1px, transparent 36px),
-    radial-gradient(circle at 72% 35%, rgba(0, 0, 0, 0.26) 0 1px, transparent 44px),
-    radial-gradient(circle at 45% 18%, rgba(145, 55, 42, 0.18) 0 2px, transparent 56px),
-    repeating-linear-gradient(0deg, rgba(222, 176, 143, 0.12) 0 2px, transparent 2px 48px),
-    repeating-linear-gradient(90deg, rgba(226, 186, 154, 0.1) 0 3px, transparent 3px 104px),
-    linear-gradient(90deg, transparent 0 52px, rgba(12, 8, 8, 0.5) 52px 57px, transparent 57px 104px),
-    repeating-linear-gradient(0deg, #3a1c18 0 46px, #17100f 46px 52px),
-    repeating-linear-gradient(90deg, #2b1513 0 101px, #130d0c 101px 107px);
-  box-shadow:
-    inset 0 28px 84px rgba(0, 0, 0, 0.44),
-    inset 0 -96px 108px rgba(0, 0, 0, 0.68);
-  opacity: 0.72;
+    /* Overhead spotlight — keeps the wall from reading as plain daytime */
+    radial-gradient(ellipse 70% 45% at 50% 0%, rgba(255, 160, 60, 0.08) 0%, transparent 100%),
+    /* Floor shadow — grounds characters visually */
+    radial-gradient(ellipse 90% 30% at 50% 100%, rgba(0, 0, 0, 0.55) 0%, transparent 80%),
+    /* Left-edge vignette */
+    linear-gradient(90deg, rgba(0, 0, 0, 0.28) 0%, transparent 22%),
+    /* Right-edge vignette */
+    linear-gradient(270deg, rgba(0, 0, 0, 0.28) 0%, transparent 22%),
+    /* Top dark strip — keeps top UI bar from competing with sky-bright wall */
+    linear-gradient(180deg, rgba(0, 0, 0, 0.36) 0%, transparent 18%);
 }
 
+/* Floor highlight line — lit stage edge strip */
 .stage::after {
-  content: 'BEAT\A DUMP\A\A      BASS\A      LINE\A\A               DROP\A               ZONE\A\A                          ♫\A\A                                  KRN';
+  content: '';
   position: absolute;
-  inset: 2% 4% 10%;
+  inset: auto 0 0;
+  height: 3px;
   z-index: 1;
   pointer-events: none;
-  color: rgba(255, 53, 198, 0.2);
-  font-size: clamp(0.62rem, 1.65vw, 1.25rem);
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  line-height: 1.08;
-  white-space: pre;
-  text-shadow:
-    0 0 8px rgba(255, 42, 205, 0.28),
-    16vw -1vh 0 rgba(0, 241, 255, 0.18),
-    34vw 0 0 rgba(255, 226, 71, 0.14),
-    58vw 3vh 0 rgba(0, 238, 255, 0.15),
-    71vw 8vh 0 rgba(255, 68, 42, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 55, 183, 0.24) 0 2px, transparent 2px 16px) 12% 25% / 72px 56px no-repeat,
-    linear-gradient(90deg, rgba(0, 255, 214, 0.2) 0 2px, transparent 2px 17px) 84% 31% / 86px 68px no-repeat,
-    radial-gradient(circle at 86% 24%, rgba(0, 247, 255, 0.12) 0 32px, transparent 33px),
-    radial-gradient(ellipse at 13% 78%, rgba(255, 37, 158, 0.18), transparent 13%),
-    radial-gradient(ellipse at 85% 82%, rgba(0, 247, 255, 0.15), transparent 13%),
-    radial-gradient(circle at 38% 24%, rgba(238, 255, 90, 0.12) 0 3px, transparent 22px),
-    linear-gradient(173deg, transparent 18%, rgba(255, 255, 255, 0.075) 18.2%, transparent 19.2%),
-    radial-gradient(ellipse at center, transparent 52%, rgba(0, 0, 0, 0.52) 100%);
-  mix-blend-mode: screen;
-  opacity: 0.38;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 180, 80, 0.35) 20%,
+    rgba(255, 200, 100, 0.55) 50%,
+    rgba(255, 180, 80, 0.35) 80%,
+    transparent 100%
+  );
+  opacity: 0.7;
 }
 
 .character-slots {
@@ -1095,7 +993,6 @@
   margin-bottom: 8px;
   border-radius: 50%;
   background: radial-gradient(ellipse, rgba(0, 0, 0, 0.42) 0%, rgba(0, 0, 0, 0.18) 48%, transparent 72%);
-  filter: blur(4px);
   opacity: 0.8;
   pointer-events: none;
   order: 2;
@@ -1144,7 +1041,7 @@
     transparent 75%
   );
   opacity: 0.28;
-  filter: blur(16px);
+  filter: blur(8px);
   pointer-events: none;
   transition: opacity 0.4s ease;
 }
@@ -1535,15 +1432,16 @@
 }
 
 @keyframes char-glow-pulse {
+  /* filter is intentionally NOT animated — animating blur recomputes the GPU
+     shader on every frame (60fps × 7 characters = severe thermal load).
+     Opacity + transform only: the browser composites these without repainting. */
   0%, 100% {
     opacity: 0.22;
     transform: scaleY(0.88) scaleX(0.94);
-    filter: blur(15px);
   }
   50% {
-    opacity: 0.58;
-    transform: scaleY(1.12) scaleX(1.06);
-    filter: blur(18px);
+    opacity: 0.55;
+    transform: scaleY(1.10) scaleX(1.05);
   }
 }
 
@@ -2261,18 +2159,6 @@
     font-size: 1rem;
   }
 
-  .top-nav {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
-    padding: 0.3rem 0.6rem;
-    --nav-h: auto;
-  }
-
-  .top-nav__links {
-    grid-column: 1 / -1;
-    order: 2;
-    flex-wrap: wrap;
-  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════

@@ -19,6 +19,8 @@
  *            all 5 voice pads now grouped together in VOCALS section
  *   voice-0: replaced Loop 06 C#min→Legacy Loop 02 C#min (zero silence, higher energy density)
  *   voice-1: replaced Loop 08 Gmin→Legacy Loop 13 Gmin (distinct chop pattern, active from t=0)
+ *   voice-0: replaced Legacy Loop 02 C#min→Legacy Loop 09 Fmin (fresh harmonic key, zero detectable
+ *            silence across full 7.5s, stronger identity distinct from all 4 other vocal pads)
  *
  * INDEX ORDER (must match ALL_PADS in App.tsx):
  *  0  beat-0       → beat-01 (Byte Groove, 8 bars)
@@ -273,12 +275,12 @@ export const deltaPackPads: DeltaPackPadConfig[] = [
   // ── Index 19: voice-0 ─────────────────────────────────────────────────
   {
     id: 'deltaPack-vocal-01', category: 'voice',
-    label: 'VCT Legacy C#',
-    audioFile: 'vocals/vocal-01.wav', sourceFile: 'Stickz VCT - Legacy Vocal Chop Loop 02 - 128BPM C#min.wav',
-    bpm: 128, bars: 4, key: 'C#',
-    notes: 'VCT Legacy vocal chop loop 02, 4 bars @ 128 BPM, C#min. Zero silence across entire 7.5s — most continuously dense loop in the VCT 128BPM set. Mean -11.9 dB. Replaces Loop 06 (choppier, lower energy). Pairs with bass-01, melody-01, atmo-01.',
-    volume: 0.56, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
-    energy: 0.70, harmonicGroup: 'C#min', transientDensity: 0.78, lowEndWeight: 0.10, mixabilityScore: 86,
+    label: 'VCT Legacy Fm',
+    audioFile: 'vocals/vocal-01.wav', sourceFile: 'Stickz VCT - Legacy Vocal Chop Loop 09 - 128BPM Fmin.wav',
+    bpm: 128, bars: 4, key: 'F',
+    notes: 'VCT Legacy vocal chop loop 09, 4 bars @ 128 BPM, Fmin. Zero detectable silence across entire 7.5s (even at -60dB threshold) — continuous chop energy. Mean -13.9 dB, peak -0.0 dB (457 histogram samples). Fmin adds harmonic freshness to vocal layer. Pairs with bass-02, melody-02. Distinct from vocal-03 (Chop series) despite shared key.',
+    volume: 0.60, playbackMode: 'loop', playbackQuantization: 'beat', allowDriftCorrection: false,
+    energy: 0.68, harmonicGroup: 'Fmin', transientDensity: 0.75, lowEndWeight: 0.08, mixabilityScore: 88,
   },
   // ── Index 20: voice-1 ─────────────────────────────────────────────────
   {
