@@ -532,7 +532,7 @@ const CURATED_PACK_IDS = new Set<ActivePackId>([
  * The single active pack available to normal gameplay.
  * Delta Pack is the canonical reference implementation.
  */
-const PLAYABLE_PACK_IDS = new Set<ActivePackId>(['alpha-pack', 'delta-pack', 'bravo-pack'])
+const PLAYABLE_PACK_IDS = new Set<ActivePackId>(['bravo-pack', 'alpha-pack', 'delta-pack'])
 
 /**
  * Packs that are archived — fully preserved in AUDIO_PACKS for replay
@@ -554,9 +554,9 @@ const ARCHIVED_PACK_IDS = new Set<ActivePackId>([
  */
 function toPlayablePackId(id: string): ActivePackId {
   if (PLAYABLE_PACK_IDS.has(id as ActivePackId)) return id as ActivePackId
-  if (ARCHIVED_PACK_IDS.has(id as ActivePackId)) return 'alpha-pack'
+  if (ARCHIVED_PACK_IDS.has(id as ActivePackId)) return 'bravo-pack'
   if (id in AUDIO_PACKS) return id as ActivePackId
-  return 'alpha-pack'
+  return 'bravo-pack'
 }
 
 /**
@@ -567,7 +567,7 @@ function toPlayablePackId(id: string): ActivePackId {
 const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
-    packs: ['alpha-pack', 'delta-pack', 'bravo-pack'],
+    packs: ['bravo-pack', 'alpha-pack', 'delta-pack'],
   },
 ]
 
@@ -1621,7 +1621,7 @@ function App() {
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [diagnosticNativeUrl, setDiagnosticNativeUrl] = useState<string>('')
   const [assignedBeatOneUrl, setAssignedBeatOneUrl] = useState<string>('')
-  const [activePackId, setActivePackId] = useState<ActivePackId>('alpha-pack')
+  const [activePackId, setActivePackId] = useState<ActivePackId>('bravo-pack')
   const [mixToast, setMixToast] = useState<string | null>(null)
   const [mixRecordingState, setMixRecordingState] = useState<MixRecordingState>('idle')
   /** RecordedMix finalised from the user's own session (enables SHARE + REPLAY). */
