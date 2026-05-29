@@ -532,7 +532,7 @@ const CURATED_PACK_IDS = new Set<ActivePackId>([
  * The single active pack available to normal gameplay.
  * Delta Pack is the canonical reference implementation.
  */
-const PLAYABLE_PACK_IDS = new Set<ActivePackId>(['alpha-pack', 'delta-pack'])
+const PLAYABLE_PACK_IDS = new Set<ActivePackId>(['alpha-pack', 'delta-pack', 'bravo-pack'])
 
 /**
  * Packs that are archived — fully preserved in AUDIO_PACKS for replay
@@ -542,7 +542,6 @@ const ARCHIVED_PACK_IDS = new Set<ActivePackId>([
   'cyberpunk-pack-1',
   'core-mix-pack-alpha',
   'new-pack-alpha',
-  'bravo-pack',
 ])
 
 /**
@@ -568,7 +567,7 @@ function toPlayablePackId(id: string): ActivePackId {
 const PACK_MENU: { group: string; packs: ActivePackId[] }[] = [
   {
     group: 'Curated Packs',
-    packs: ['alpha-pack', 'delta-pack'],
+    packs: ['alpha-pack', 'delta-pack', 'bravo-pack'],
   },
 ]
 
@@ -662,17 +661,17 @@ const CORE_MIX_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
 const BRAVO_PACK_PAD_ROWS: { groups: CyberpunkPadGroup[] }[] = [
   {
     groups: [
-      { label: 'BEATS',  color: '#e84b3a', padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3'] },
+      { label: 'BEATS',  color: '#e84b3a', padIds: ['beat-0', 'beat-1', 'beat-2', 'beat-3', 'beat-4'] },
       { label: 'BASS',   color: '#c97d2a', padIds: ['percussion-0', 'percussion-1', 'percussion-2', 'percussion-3'] },
-      { label: 'MELODY', color: '#3a8ee8', padIds: ['melody-0', 'melody-1', 'melody-2', 'melody-4'] },
+      { label: 'MELODY', color: '#3a8ee8', padIds: ['melody-0', 'melody-1', 'melody-2'] },
     ],
   },
   {
     groups: [
-      { label: 'FX',          color: '#2ab88a', padIds: ['effect-0', 'effect-1', 'effect-2', 'effect-3'] },
-      { label: 'VOCALS',      color: '#b83a7c', padIds: ['voice-0', 'voice-1', 'voice-2'] },
-      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['beat-4', 'percussion-4', 'voice-3'] },
-      { label: 'ATMOSPHERES', color: '#3a6eb8', padIds: ['melody-3', 'voice-4'] },
+      { label: 'LAYERS',      color: '#3a6eb8', padIds: ['melody-3', 'melody-4', 'percussion-4'] },
+      { label: 'VOCALS',      color: '#b83a7c', padIds: ['voice-0', 'voice-1', 'voice-2', 'voice-3', 'voice-4'] },
+      { label: 'FX',          color: '#2ab88a', padIds: ['effect-0', 'effect-1'] },
+      { label: 'TRANSITIONS', color: '#7ab83a', padIds: ['effect-2', 'effect-3'] },
     ],
   },
 ]
