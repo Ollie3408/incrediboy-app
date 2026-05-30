@@ -160,20 +160,30 @@ export function computePlaybackRate(
 // ── Micro fade-in / gain ramp ─────────────────────────────────────────────────
 
 /**
- * Per-element ramp handle.  When a new ramp starts on an element, any previous
+ * Anything with a writable `volume` (0–1) can be ramped. This lets the same
+ * ramp helpers drive both an HTMLAudioElement and the Web Audio BufferVoice
+ * (whose `volume` setter writes its GainNode), so the migration to a
+ * sample-accurate buffer engine needs no change to the ramp call sites.
+ */
+export interface GainRampTarget {
+  volume: number
+}
+
+/**
+ * Per-target ramp handle.  When a new ramp starts on a target, any previous
  * ramp is cancelled by setting its handle's `cancelled` flag — preventing two
- * concurrent RAF loops from fighting over `audio.volume` (which produced audible
+ * concurrent RAF loops from fighting over `volume` (which produced audible
  * clicks, dips, and momentary silence in earlier versions).
  */
-const _activeRamps = new WeakMap<HTMLAudioElement, { cancelled: boolean }>()
+const _activeRamps = new WeakMap<GainRampTarget, { cancelled: boolean }>()
 
-/** Returns true if a gain ramp is currently running on this element. */
-export function isRampActive(audio: HTMLAudioElement): boolean {
+/** Returns true if a gain ramp is currently running on this target. */
+export function isRampActive(audio: GainRampTarget): boolean {
   return _activeRamps.has(audio)
 }
 
-/** Cancel any in-flight ramp for this element without changing its volume. */
-export function cancelGainRamp(audio: HTMLAudioElement): void {
+/** Cancel any in-flight ramp for this target without changing its volume. */
+export function cancelGainRamp(audio: GainRampTarget): void {
   const handle = _activeRamps.get(audio)
   if (handle) {
     handle.cancelled = true
@@ -198,7 +208,7 @@ export function cancelGainRamp(audio: HTMLAudioElement): void {
  * has no adverse effect on the audio thread scheduling.
  */
 export function scheduleGainRamp(
-  audio: HTMLAudioElement,
+  audio: GainRampTarget,
   targetVol: number,
   durationMs = 40,
 ): void {

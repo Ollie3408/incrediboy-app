@@ -47,7 +47,6 @@ import {
   currentBeatInBar,
   isRampActive,
   makeClock,
-  msUntilNextBoundary,
   scheduleGainRamp,
   validateLoopTiming,
 } from './musicClock'
@@ -1027,49 +1026,112 @@ function CharacterFigureFrame({ children }: { children: ReactNode }) {
   )
 }
 
-function assignedAudioHasSrc(audio: HTMLAudioElement): boolean {
-  const src = audio.currentSrc || audio.src
-  if (!src) return false
-  return /\.(wav|mp3|ogg|m4a|aac|flac)(\?|#|$)/i.test(src) || src.startsWith('blob:')
-}
+/**
+ * BufferVoice — a single sample-accurate Web Audio loop voice.
+ *
+ * Replaces HTMLAudioElement looping (whose loop seams are not sample-accurate
+ * and which free-runs on its own clock, causing drift). The decoded AudioBuffer
+ * is looped by an AudioBufferSourceNode on the shared AudioContext clock, so
+ * loops never drift relative to each other.
+ *
+ *  • One persistent GainNode per voice (survives source restarts) → audibility.
+ *  • The internal AudioBufferSourceNode is single-use: startAt() recreates it,
+ *    stop() disposes it. The voice object itself persists for the pack lifetime.
+ *  • Exposes a thin HTMLAudioElement-compatible surface (volume / paused /
+ *    duration / loop / src / play / pause / currentTime) so the existing gain,
+ *    mute, volume-slider, diagnostics, and replay call sites work unchanged.
+ *    `volume` writes the GainNode, so scheduleGainRamp() ramps it directly.
+ */
+class BufferVoice {
+  readonly ctx: AudioContext
+  readonly buffer: AudioBuffer
+  readonly gainNode: GainNode
+  readonly src: string
+  loop: boolean
+  muted = false
+  onerror: ((e: unknown) => void) | null = null
+  onpause: (() => void) | null = null
+  onended: (() => void) | null = null
+  private source: AudioBufferSourceNode | null = null
+  private startCtxTime = 0
+  private startOffset = 0
+  private pendingOffset = 0
 
-function waitForAssignedAudioReady(audio: HTMLAudioElement): Promise<void> {
-  if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+  constructor(ctx: AudioContext, buffer: AudioBuffer, gainNode: GainNode, loop: boolean, src: string) {
+    this.ctx = ctx
+    this.buffer = buffer
+    this.gainNode = gainNode
+    this.loop = loop
+    this.src = src
+    this.gainNode.gain.value = 0
+  }
+
+  get duration(): number { return this.buffer.duration }
+  get paused(): boolean { return this.source === null }
+  /** Buffer engine never alters playback rate (no pitch-based drift correction). */
+  get playbackRate(): number { return 1 }
+
+  get volume(): number { return this.gainNode.gain.value }
+  set volume(v: number) {
+    const c = Math.max(0, Math.min(1, isFinite(v) ? v : 0))
+    try { this.gainNode.gain.setValueAtTime(c, this.ctx.currentTime) }
+    catch { this.gainNode.gain.value = c }
+  }
+
+  /** Computed playback position (for diagnostics) / pending seek offset. */
+  get currentTime(): number {
+    if (this.source === null) return this.pendingOffset
+    const elapsed = this.ctx.currentTime - this.startCtxTime + this.startOffset
+    const d = this.buffer.duration
+    if (this.loop && d > 0) return ((elapsed % d) + d) % d
+    return Math.min(Math.max(0, elapsed), d)
+  }
+  set currentTime(t: number) {
+    // Buffer sources cannot be seeked in place — store as the next start offset.
+    this.pendingOffset = isFinite(t) ? Math.max(0, t) : 0
+  }
+
+  /** Start (or restart) the source at an absolute AudioContext time. */
+  startAt(when: number, offset = this.pendingOffset): void {
+    this.stop()
+    const d = this.buffer.duration
+    const off = this.loop ? (d > 0 ? offset % d : 0) : Math.min(offset, d)
+    const src = this.ctx.createBufferSource()
+    src.buffer = this.buffer
+    src.loop = this.loop
+    src.connect(this.gainNode)
+    src.onended = () => { if (this.onended) this.onended() }
+    const startWhen = Math.max(when, this.ctx.currentTime)
+    try { src.start(startWhen, Math.max(0, off || 0)) }
+    catch (e) { if (this.onerror) this.onerror(e) }
+    this.source = src
+    this.startCtxTime = startWhen
+    this.startOffset = Math.max(0, off || 0)
+    this.pendingOffset = 0
+  }
+
+  /** HTMLAudio-compatible: ensure the voice is running. */
+  play(): Promise<void> {
+    if (this.source === null) this.startAt(this.ctx.currentTime)
     return Promise.resolve()
   }
-  return new Promise((resolve, reject) => {
-    const onReady = () => {
-      cleanup()
-      resolve()
-    }
-    const onError = () => {
-      cleanup()
-      reject(new Error('assigned audio failed to load'))
-    }
-    const cleanup = () => {
-      audio.removeEventListener('canplaythrough', onReady)
-      audio.removeEventListener('error', onError)
-    }
-    audio.addEventListener('canplaythrough', onReady, { once: true })
-    audio.addEventListener('error', onError, { once: true })
-    audio.load()
-  })
-}
 
-/** Fully stop and detach one assigned loop element. */
-function stopAssignedAudioElement(audio: HTMLAudioElement): void {
-  audio.pause()
-  audio.loop = false
-  audio.muted = false
-  audio.volume = 0
-  audio.currentTime = 0
-  if (assignedAudioHasSrc(audio)) {
-    audio.removeAttribute('src')
-    try {
-      audio.load()
-    } catch {
-      // load() can throw if the element is already torn down
+  pause(): void {
+    this.stop()
+    if (this.onpause) this.onpause()
+  }
+
+  stop(): void {
+    if (this.source) {
+      try { this.source.onended = null; this.source.stop() } catch { /* already stopped */ }
+      try { this.source.disconnect() } catch { /* noop */ }
+      this.source = null
     }
+  }
+
+  dispose(): void {
+    this.stop()
+    try { this.gainNode.disconnect() } catch { /* noop */ }
   }
 }
 
@@ -1638,12 +1700,13 @@ function App() {
   const [devDrawerOpen, setDevDrawerOpen] = useState(false)
   const [devPerfPanel, setDevPerfPanel] = useState<{
     activePads: number; nodes: number; softCorr: number; hardSnaps: number; ctxState: string
+    nextResyncS: number; lastDriftMs: number; lastCorrected: number; resyncs: number
   } | null>(null)
   const [introExiting, setIntroExiting] = useState(false)
   const [sharedMixAwaitingAudio, setSharedMixAwaitingAudio] = useState(false)
   const sharedMixHydratedRef = useRef(false)
 
-  const assignedAudioRef = useRef<Map<number, HTMLAudioElement>>(new Map())
+  const assignedAudioRef = useRef<Map<number, BufferVoice>>(new Map())
   /** Per-slot pad volume multiplier (0–1). Set when a pad is assigned. */
   const padVolumeRef = useRef<Map<number, number>>(new Map())
   /** RAF handle for throttled volume slider updates — prevents 60Hz React re-renders. */
@@ -1653,8 +1716,46 @@ function App() {
   /** Shared Web Audio context for the master dynamics compressor. */
   const audioCtxRef = useRef<AudioContext | null>(null)
   const masterCompressorRef = useRef<DynamicsCompressorNode | null>(null)
-  /** MediaElementSourceNodes keyed by slot — needed for cleanup. */
-  const sourceNodesRef = useRef<Map<number, MediaElementAudioSourceNode>>(new Map())
+  /** Master gain bus between the compressor and destination. Used purely as the
+   *  pause/resume control: ramping it to 0 silences everything while the
+   *  AudioContext clock — and every looping source — keeps running, so resume is
+   *  perfectly in phase with zero node churn. */
+  const masterGainNodeRef = useRef<GainNode | null>(null)
+  // ── Sample-accurate Web Audio transport pool ───────────────────────────────
+  // One persistent BufferVoice per pack pad, keyed by game pad id. Each pad's WAV
+  // is decoded once into an AudioBuffer and looped by an AudioBufferSourceNode on
+  // the shared AudioContext clock, so loops are sample-accurate and never drift.
+  // Every loop pad starts together at gain 0 when the transport starts and is
+  // NEVER restarted while playing. Assigning / removing / muting a character only
+  // ramps that voice's GainNode.
+  const packTransportRef = useRef<Map<string, BufferVoice>>(new Map())
+  /** Decoded AudioBuffers for the active pack, keyed by pad id (reused across
+   *  source restarts so Restart Loops never re-decodes). */
+  const audioBuffersRef = useRef<Map<string, AudioBuffer>>(new Map())
+  const packTransportPackIdRef = useRef<ActivePackId | null>(null)
+  /** In-flight build promise so concurrent callers await the same load pass. */
+  const packTransportBuildRef = useRef<Promise<void> | null>(null)
+  /** Indirection so the early-defined startOrRestartLoops can invoke the
+   *  pool starter, which must be declared after ensureAudioCtx. */
+  const startGlobalTransportRef = useRef<() => void>(() => {})
+  // ── Bar-boundary resync ─────────────────────────────────────────────────────
+  // Lightweight scheduled re-alignment: at predictable 16-bar phrase boundaries
+  // (≈30 s @ 128 BPM) every pool loop is snapped back to its exact expected
+  // position in one synchronous batch. This is NOT continuous phase correction —
+  // it fires once per phrase, only touches pads that have drifted past threshold,
+  // and seeks at the loop-start zero-crossing so it is inaudible.
+  const resyncTimeoutRef = useRef<number | null>(null)
+  const resyncIntervalRef = useRef<number | null>(null)
+  /** Same indirection trick as the pool starter (declared after ensureAudioCtx). */
+  const scheduleResyncRef = useRef<() => void>(() => {})
+  /** DEV-only resync telemetry surfaced in the perf panel. */
+  const resyncStatsRef = useRef({
+    lastResyncAt: 0,
+    nextResyncAt: 0,
+    lastMaxDriftMs: 0,
+    lastCorrectedCount: 0,
+    totalResyncs: 0,
+  })
   const masterCycleIntervalRef = useRef<number | null>(null)
   /** setInterval handle for the master phase lock correction monitor. */
   const phaseCorrectionIntervalRef = useRef<number | null>(null)
@@ -1666,14 +1767,6 @@ function App() {
   const masterMutedRef = useRef(false)
   const mutedSlotsRef = useRef<Set<number>>(new Set())
   const volumeRef = useRef(volume)
-  /**
-   * True-transport-lock pause state.
-   * pauseOffsetsRef:      audio.currentTime captured for each slot the moment PAUSE is pressed.
-   * pauseClockElapsedRef: (performance.now() − originMs) captured at PAUSE — used to re-anchor
-   *                       the musical clock on resume so quantization stays correct.
-   */
-  const pauseOffsetsRef = useRef<Map<number, number>>(new Map())
-  const pauseClockElapsedRef = useRef<number>(0)
   /**
    * Per-slot timestamp (performance.now()) of the most recent audio.play() call.
    * Used by runPhaseCorrectionPass to skip corrections during the post-play
@@ -1739,8 +1832,13 @@ function App() {
       window.clearInterval(devDropoutWatcherRef.current)
       devDropoutWatcherRef.current = null
     }
-    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
+    // Tear down the transport pool (stops every looping source + GainNode).
+    packTransportRef.current.forEach((voice) => voice.dispose())
+    packTransportRef.current.clear()
+    audioBuffersRef.current.clear()
+    packTransportPackIdRef.current = null
+    packTransportBuildRef.current = null
     setSlots(Array(SLOT_COUNT).fill(null))
     setMutedSlots(new Set())
     mutedSlotsRef.current = new Set()
@@ -2021,6 +2119,15 @@ function App() {
       window.clearInterval(devDropoutWatcherRef.current)
       devDropoutWatcherRef.current = null
     }
+    // Bar-boundary resync timers
+    if (resyncTimeoutRef.current !== null) {
+      window.clearTimeout(resyncTimeoutRef.current)
+      resyncTimeoutRef.current = null
+    }
+    if (resyncIntervalRef.current !== null) {
+      window.clearInterval(resyncIntervalRef.current)
+      resyncIntervalRef.current = null
+    }
   }, [])
 
   const clearDiagnosticNativeTest = useCallback(() => {
@@ -2179,6 +2286,53 @@ function App() {
   }, [slots, activePackId])
 
   /**
+   * DEV-only master transport report. Reports the always-running pool state and a
+   * pure drift read-out (expected loop position vs actual audio.currentTime) for
+   * every pool pad. This is observe-only — there is NO automatic phase correction.
+   */
+  const logGlobalTransportDiagnostics = useCallback(() => {
+    if (!import.meta.env.DEV) return
+    if (packTransportRef.current.size === 0) return
+    const pack = AUDIO_PACKS[activePackId]
+    const elapsedMs =
+      musicalClockRef.current.originMs > 0
+        ? performance.now() - musicalClockRef.current.originMs
+        : 0
+    let runningCount = 0
+    const rows: Array<Record<string, unknown>> = []
+    packTransportRef.current.forEach((audio, padId) => {
+      if (!audio.paused) runningCount += 1
+      const pad = PAD_BY_ID[padId]
+      const packPad = pad ? packPadForGamePad(pad, pack) : undefined
+      const dur = audio.duration > 0 ? audio.duration : null
+      let expectedPos: number | null = null
+      let driftMs: string | null = null
+      if (dur) {
+        expectedPos = (elapsedMs / 1000) % dur
+        driftMs = `${(Math.abs(audio.currentTime - expectedPos) * 1000).toFixed(0)}ms`
+      }
+      rows.push({
+        padId,
+        cat: packPad?.category ?? pad?.category ?? '—',
+        running: !audio.paused,
+        currentTime: dur ? audio.currentTime.toFixed(3) : '—',
+        expected: expectedPos !== null ? expectedPos.toFixed(3) : '—',
+        drift: driftMs ?? '—',
+      })
+    })
+    console.log('[global-transport] sync report (drift = |actual − expected|, observe-only)', {
+      pack: pack.id,
+      loadedPads: packTransportRef.current.size,
+      runningLoops: runningCount,
+      assignedSlots: assignedAudioRef.current.size,
+      mutedSlots: mutedSlotsRef.current.size,
+      masterPaused: masterMutedRef.current,
+      clockElapsedMs: Math.round(elapsedMs),
+    })
+    if (rows.length > 0) console.table(rows)
+  }, [activePackId])
+
+  /**
    * DEV-only: snapshot the full runtime audio state for stability diagnostics.
    * Logs active pad count, effective volume per slot, AudioContext state,
    * compressor reduction, and flags any invalid or overloaded values.
@@ -2270,103 +2424,13 @@ function App() {
     console.groupEnd()
   }, [])
 
-  /**
-   * Start one assigned slot once.
-   * Loop pads use native audio.loop and are NOT restarted on master cycle ticks.
-   * One-shots play a single time and stop naturally.
-   *
-   * @param forceRestart  Reset currentTime and replay from start (PLAY LOOPS / session start).
-   * @param fadeIn        Apply micro fade-in ramp on first start only (default true).
-   */
-  const startAssignedSlotAudio = useCallback(
-    (
-      slot: number,
-      audio: HTMLAudioElement,
-      options: { fadeIn?: boolean; forceRestart?: boolean; vol?: number } = {},
-    ): void => {
-      if (!assignedAudioHasSrc(audio)) return
-
-      const isOneShot = padOneShotRef.current.get(slot) ?? false
-      audio.loop = !isOneShot
-      audio.muted = false
-
-      const slotMuted = mutedSlotsRef.current.has(slot) || masterMutedRef.current
-      const targetVol =
-        options.vol ?? (slotMuted ? 0 : padEffVol(slot))
-
-      // Muted loop pads that are NOT under global transport pause: keep playing silently
-      // so per-slot mute/unmute (handleSlotClick) is gapless.
-      // When masterMuted (true transport pause), do NOT start hidden playback —
-      // toggleMasterMute owns the synchronized resume sequence.
-      if (targetVol <= 0 && !isOneShot && isPlayingRef.current && !masterMutedRef.current) {
-        audio.volume = 0
-        if (audio.paused) {
-          slotLastPlayTimeRef.current.set(slot, performance.now())
-          void audio.play().catch((err) =>
-            console.warn('[audio] silent loop play failed', { slot, err }),
-          )
-        }
-        return
-      }
-
-      if (targetVol <= 0) {
-        audio.volume = 0
-        if (isOneShot) audio.pause()
-        return
-      }
-
-      const alreadyPlaying = !audio.paused && audio.currentTime > 0.01
-      const shouldRestart = options.forceRestart ?? !alreadyPlaying
-
-      if (shouldRestart) {
-        audio.currentTime = 0
-        audio.volume = 0
-        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
-          console.log('[beat3] currentTime reset to 0, play() queued', { slot })
-        }
-        slotLastPlayTimeRef.current.set(slot, performance.now())
-        void audio
-          .play()
-          .then(() => {
-            if (options.fadeIn !== false) {
-              scheduleGainRamp(audio, targetVol)
-            } else {
-              audio.volume = targetVol
-            }
-            if (import.meta.env.DEV) {
-              if ((audio as { __beat3?: boolean }).__beat3) {
-                console.log('[beat3] play() resolved', { slot, currentTime: audio.currentTime.toFixed(3) })
-              }
-              console.log('[audio] slot started', {
-                slot,
-                isOneShot,
-                nativeLoop: !isOneShot,
-                fadeIn: options.fadeIn !== false,
-              })
-            }
-          })
-          .catch((err) => console.warn('[audio] slot play failed', { slot, err }))
-      } else {
-        // Already playing — update volume only, never reset currentTime
-        audio.volume = targetVol
-      }
-    },
-    [padEffVol],
-  )
-
-  /** Start every assigned slot once at session start / explicit restart. */
-  const startAllAssignedAudio = useCallback(
-    (options?: { forceRestart?: boolean; fadeIn?: boolean }) => {
-      assignedAudioRef.current.forEach((audio, slot) => {
-        startAssignedSlotAudio(slot, audio, {
-          forceRestart: options?.forceRestart ?? true,
-          fadeIn: options?.fadeIn ?? true,
-        })
-      })
-      logAssignedAudioDiagnostics()
-    },
-    [startAssignedSlotAudio, logAssignedAudioDiagnostics],
-  )
+  // ── GLOBAL ALWAYS-RUNNING TRANSPORT ─────────────────────────────────────────
+  // The old per-slot starters (startAssignedSlotAudio / startAllAssignedAudio)
+  // reset audio.currentTime to 0 and called play() every time a pad was assigned,
+  // which is what let loops drift out of phase. They are replaced by the pack
+  // transport pool (buildPackTransport + startGlobalTransport, declared after
+  // ensureAudioCtx): every loop starts once at a shared origin and assignment only
+  // adjusts gain.
 
   /**
    * Master clock heartbeat — keeps masterCycleIntervalRef alive as a session-active
@@ -2417,10 +2481,14 @@ function App() {
     isPlayingRef.current = true
     setIsPlaying(true)
     setTransportStatus(masterMutedRef.current ? 'Paused' : 'Playing')
-    // Start each slot once — browser native loop handles seamless repetition
-    startAllAssignedAudio({ forceRestart: true, fadeIn: true })
+    // GLOBAL TRANSPORT: reset every pack loop to bar 1 / beat 1 and start them all
+    // in one synchronized batch at volume 0, then reveal the assigned slots.
+    // Native audio.loop handles seamless repetition; nothing is restarted afterwards.
+    startGlobalTransportRef.current()
     // Heartbeat: keeps masterCycleIntervalRef non-null as the session-active signal
     masterCycleIntervalRef.current = window.setInterval(tickMasterClock, MASTER_LOOP_MS)
+    // Schedule lightweight bar-boundary resync from this fresh transport origin.
+    scheduleResyncRef.current()
     // Phase correction disabled: writing playbackRate (0.98/1.02) and hard-snapping
     // audio.currentTime mid-playback both cause audible clicks and trigger the browser's
     // real-time pitch-shift DSP on all 7 active elements — the primary source of CPU heat
@@ -2455,15 +2523,21 @@ function App() {
         const elapsedS = (performance.now() - stats.intervalStart) / 1000
         setDevPerfPanel({
           activePads: assignedAudioRef.current.size,
-          nodes: sourceNodesRef.current.size,
+          nodes: packTransportRef.current.size,
           softCorr: Math.round(stats.softCorrections / Math.max(elapsedS, 1) * 10),
           hardSnaps: stats.hardSnaps,
           ctxState: audioCtxRef.current?.state ?? 'none',
+          nextResyncS: Math.max(0, Math.round((resyncStatsRef.current.nextResyncAt - performance.now()) / 1000)),
+          lastDriftMs: resyncStatsRef.current.lastMaxDriftMs,
+          lastCorrected: resyncStatsRef.current.lastCorrectedCount,
+          resyncs: resyncStatsRef.current.totalResyncs,
         })
         devPerfStatsRef.current = { softCorrections: 0, hardSnaps: 0, intervalStart: performance.now() }
         if (dropoutFound && import.meta.env.DEV) {
           console.warn('[dropout-watch] dropout detected — see above')
         }
+        // Global transport sync report (drift only — no automatic correction).
+        logGlobalTransportDiagnostics()
       }, 5_000)
     }
     if (import.meta.env.DEV) {
@@ -2478,7 +2552,7 @@ function App() {
       // Small delay so audio elements have time to set their initial volumes
       window.setTimeout(logFullMixDiagnostics, 200)
     }
-  }, [clearMasterCycle, startAllAssignedAudio, tickMasterClock, runPhaseCorrectionPass, logFullMixDiagnostics])
+  }, [clearMasterCycle, tickMasterClock, runPhaseCorrectionPass, logFullMixDiagnostics, logGlobalTransportDiagnostics])
 
   /**
    * Lazily create a shared AudioContext + DynamicsCompressor chain.
@@ -2488,6 +2562,7 @@ function App() {
   const ensureAudioCtx = useCallback((): {
     ctx: AudioContext
     compressor: DynamicsCompressorNode
+    masterGain: GainNode
   } | null => {
     try {
       if (!audioCtxRef.current) {
@@ -2516,9 +2591,15 @@ function App() {
         comp.ratio.setValueAtTime(2.0, ctx.currentTime)
         comp.attack.setValueAtTime(0.010, ctx.currentTime)
         comp.release.setValueAtTime(0.40, ctx.currentTime)
-        comp.connect(ctx.destination)
+        // Pad voices → compressor → masterGain → destination.
+        // masterGain is the pause/resume bus (1 = playing, 0 = paused).
+        const masterGain = ctx.createGain()
+        masterGain.gain.setValueAtTime(1, ctx.currentTime)
+        comp.connect(masterGain)
+        masterGain.connect(ctx.destination)
         audioCtxRef.current = ctx
         masterCompressorRef.current = comp
+        masterGainNodeRef.current = masterGain
 
         // ── AudioContext auto-resume guard ─────────────────────────────────
         // Browsers auto-suspend the AudioContext after a period of no user
@@ -2541,54 +2622,341 @@ function App() {
           })
         }
       }
-      return { ctx: audioCtxRef.current, compressor: masterCompressorRef.current! }
+      return {
+        ctx: audioCtxRef.current,
+        compressor: masterCompressorRef.current!,
+        masterGain: masterGainNodeRef.current!,
+      }
     } catch (e) {
       console.warn('[audio] AudioContext unavailable — running without compressor', e)
       return null
     }
   }, [])
 
+  // ── SAMPLE-ACCURATE WEB AUDIO TRANSPORT POOL ────────────────────────────────
+
+  /**
+   * Tear down the entire transport pool. Stops every looping source, disconnects
+   * each voice's GainNode, and drops decoded buffers. assignedAudioRef references
+   * become dead afterwards, so callers must clear it too.
+   */
+  const disposePackTransport = useCallback(() => {
+    packTransportRef.current.forEach((voice) => {
+      cancelGainRamp(voice)
+      voice.dispose()
+    })
+    packTransportRef.current.clear()
+    audioBuffersRef.current.clear()
+    packTransportPackIdRef.current = null
+    packTransportBuildRef.current = null
+  }, [])
+
+  /**
+   * Stop every looping source (keeps decoded buffers + GainNodes loaded) so the
+   * idle pool consumes no audio-thread time. Used when the stage empties; the
+   * next start recreates the sources from bar 1 in sync.
+   */
+  const pausePackTransport = useCallback(() => {
+    packTransportRef.current.forEach((voice) => {
+      cancelGainRamp(voice)
+      voice.volume = 0
+      voice.stop()
+    })
+  }, [])
+
+  /**
+   * Build the transport pool for a pack: decode every game pad's WAV into an
+   * AudioBuffer, create one persistent GainNode per pad routed through the master
+   * compressor, and wrap them in BufferVoices (sources are started later by the
+   * global transport). Idempotent — concurrent callers await the same in-flight
+   * build. Switching packs disposes the previous pool first.
+   */
+  const buildPackTransport = useCallback(
+    async (packId: ActivePackId): Promise<void> => {
+      if (packTransportPackIdRef.current === packId && packTransportRef.current.size > 0) {
+        if (packTransportBuildRef.current) await packTransportBuildRef.current
+        return
+      }
+      // Different pack already loaded → tear it down before building the new one.
+      if (packTransportPackIdRef.current !== null && packTransportPackIdRef.current !== packId) {
+        disposePackTransport()
+        assignedAudioRef.current.clear()
+      }
+      packTransportPackIdRef.current = packId
+
+      const build = (async () => {
+        const pack = AUDIO_PACKS[packId]
+        const ac = ensureAudioCtx()
+        if (!ac) {
+          console.warn('[web-audio] AudioContext unavailable — cannot build buffer engine')
+          return
+        }
+        if (ac.ctx.state === 'suspended') {
+          try { await ac.ctx.resume() } catch { /* resumed on next gesture */ }
+        }
+        const loadWaits: Promise<void>[] = []
+        ALL_PADS.forEach((pad) => {
+          if (packTransportRef.current.has(pad.id)) return
+          const url = resolveAudioSrc(pad, packId)
+          if (!url) return
+          const packPad = packPadForGamePad(pad, pack)
+          const isOneShot = packPad?.playbackMode === 'one-shot'
+          loadWaits.push(
+            (async () => {
+              try {
+                const resp = await fetch(url)
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+                const arr = await resp.arrayBuffer()
+                const buffer = await ac.ctx.decodeAudioData(arr)
+                // Skip if a concurrent build already populated this pad.
+                if (packTransportRef.current.has(pad.id)) return
+                const gainNode = ac.ctx.createGain()
+                gainNode.gain.value = 0
+                gainNode.connect(ac.compressor)
+                const voice = new BufferVoice(ac.ctx, buffer, gainNode, !isOneShot, url)
+                voice.onerror = (e) => console.warn('[web-audio] source start failed', pad.id, e)
+                audioBuffersRef.current.set(pad.id, buffer)
+                packTransportRef.current.set(pad.id, voice)
+                if (import.meta.env.DEV && !isOneShot && buffer.duration > 0) {
+                  validateLoopTiming(pad.id, buffer.duration, packPad?.bpm ?? null, packPad?.bars ?? null)
+                }
+              } catch (error) {
+                // FALLBACK (#6): a failed buffer decode is loud in DEV so the pad
+                // can be re-encoded; in prod the pad is simply silent rather than
+                // crashing the whole mix.
+                console.warn('[web-audio] buffer load/decode FAILED — pad will be silent', {
+                  padId: pad.id,
+                  packId,
+                  url,
+                  error,
+                })
+              }
+            })(),
+          )
+        })
+        await Promise.all(loadWaits)
+        if (import.meta.env.DEV) {
+          console.log('[web-audio] buffer pool built', {
+            pack: packId,
+            voices: packTransportRef.current.size,
+            buffers: audioBuffersRef.current.size,
+          })
+        }
+      })()
+
+      packTransportBuildRef.current = build
+      try {
+        await build
+      } finally {
+        if (packTransportBuildRef.current === build) packTransportBuildRef.current = null
+      }
+    },
+    [ensureAudioCtx, disposePackTransport],
+  )
+
+  /**
+   * Start (or restart) the whole pool in one sample-locked batch. A single
+   * AudioContext start time is captured and EVERY loop voice's source is
+   * (re)created and scheduled to begin at that exact instant from buffer offset
+   * 0 — so all loops are phase-aligned to bar 1 / beat 1 on the audio clock and
+   * never drift. Currently-assigned, non-muted slots are then revealed with a
+   * gain ramp; one-shot pads fire once on reveal only.
+   */
+  const startGlobalTransport = useCallback(() => {
+    const ac = ensureAudioCtx()
+    if (!ac) return
+    if (ac.ctx.state === 'suspended') {
+      void ac.ctx.resume().catch(() => undefined)
+    }
+    // Make sure the pause bus is open whenever the transport (re)starts.
+    masterGainNodeRef.current?.gain.setValueAtTime(
+      masterMutedRef.current ? 0 : 1,
+      ac.ctx.currentTime,
+    )
+    // One shared start instant (small lookahead so every source is scheduled
+    // before the clock reaches it → truly simultaneous, sample-accurate).
+    const startAt = ac.ctx.currentTime + 0.08
+    // Re-anchor the musical clock to when audio actually begins (for the overlay).
+    musicalClockRef.current = {
+      ...musicalClockRef.current,
+      originMs: performance.now() + 80,
+    }
+    // Phase 1 — (re)create + schedule every loop source at the shared instant.
+    packTransportRef.current.forEach((voice) => {
+      cancelGainRamp(voice)
+      voice.volume = 0
+      if (voice.loop) {
+        voice.startAt(startAt, 0)
+      } else {
+        voice.stop()
+      }
+    })
+    // Phase 2 — reveal assigned, non-muted slots.
+    assignedAudioRef.current.forEach((voice, slot) => {
+      const slotMuted = mutedSlotsRef.current.has(slot) || masterMutedRef.current
+      const isOneShot = padOneShotRef.current.get(slot) ?? false
+      if (slotMuted) {
+        voice.volume = 0
+        return
+      }
+      if (isOneShot) {
+        // One-shot: fire once from the top, aligned to the shared start instant.
+        voice.startAt(startAt, 0)
+      }
+      scheduleGainRamp(voice, padEffVol(slot))
+    })
+    logAssignedAudioDiagnostics()
+  }, [ensureAudioCtx, padEffVol, logAssignedAudioDiagnostics])
+  // Keep the indirection ref current so the earlier-declared startOrRestartLoops
+  // can invoke the pool starter without a forward-reference dependency.
+  startGlobalTransportRef.current = startGlobalTransport
+
+  // ── DRIFT MONITOR (DEV observe-only) ────────────────────────────────────────
+  // The sample-accurate buffer engine cannot drift, so the old corrective
+  // bar-boundary resync has been REMOVED. What remains is a DEV-only observer
+  // that, once per 16-bar phrase, measures each loop voice's position against
+  // its mathematically-expected position and reports the max drift — proof that
+  // the engine stays locked. It NEVER seeks, mutes, or alters playback, and it
+  // does not run at all in production builds.
+  const MONITOR_BARS = 16
+
+  /** 16-bar monitor period (ms) for the active pack, from its nominal BPM. */
+  const getResyncMs = useCallback((): number => {
+    const pack = AUDIO_PACKS[activePackId]
+    const bpm = pack?.pads?.find((p) => typeof p.bpm === 'number' && p.bpm > 0)?.bpm ?? 128
+    const barMs = (60 / bpm) * 4 * 1000
+    return barMs * MONITOR_BARS
+  }, [activePackId])
+
+  /** Observe-only: measure max loop drift across the pool and log it. No edits. */
+  const runBarBoundaryResync = useCallback(() => {
+    if (!isPlayingRef.current || masterMutedRef.current) return
+    const origin = musicalClockRef.current.originMs
+    if (origin <= 0) return
+    const elapsedMs = performance.now() - origin
+    let maxDriftMs = 0
+    packTransportRef.current.forEach((voice) => {
+      if (voice.paused || !voice.loop) return
+      const dur = voice.duration
+      if (!(dur > 0) || !isFinite(dur)) return
+      const loopMs = dur * 1000
+      const expected = (elapsedMs % loopMs) / 1000
+      let drift = Math.abs(voice.currentTime - expected)
+      drift = Math.min(drift, dur - drift)
+      const driftMs = drift * 1000
+      if (driftMs > maxDriftMs) maxDriftMs = driftMs
+    })
+    const stats = resyncStatsRef.current
+    stats.lastResyncAt = performance.now()
+    stats.lastMaxDriftMs = Math.round(maxDriftMs)
+    stats.lastCorrectedCount = 0
+    stats.totalResyncs += 1
+    if (import.meta.env.DEV) {
+      console.log('[drift-monitor] phrase boundary', {
+        maxDriftMs: Math.round(maxDriftMs),
+        elapsedMs: Math.round(elapsedMs),
+      })
+    }
+  }, [])
+
+  /**
+   * (Re)schedule the DEV drift monitor on 16-bar boundaries. No-ops in
+   * production (the buffer engine cannot drift, so there is nothing to watch).
+   * Clears existing timers first so pause/resume and restarts never duplicate.
+   */
+  const scheduleResync = useCallback(() => {
+    if (resyncTimeoutRef.current !== null) {
+      window.clearTimeout(resyncTimeoutRef.current)
+      resyncTimeoutRef.current = null
+    }
+    if (resyncIntervalRef.current !== null) {
+      window.clearInterval(resyncIntervalRef.current)
+      resyncIntervalRef.current = null
+    }
+    if (!import.meta.env.DEV) return
+    const resyncMs = getResyncMs()
+    if (!(resyncMs > 0) || !isFinite(resyncMs)) return
+    const origin = musicalClockRef.current.originMs
+    const elapsed = origin > 0 ? performance.now() - origin : 0
+    const intoPhrase = ((elapsed % resyncMs) + resyncMs) % resyncMs
+    const msUntilNext = Math.max(50, resyncMs - intoPhrase)
+    resyncStatsRef.current.nextResyncAt = performance.now() + msUntilNext
+    resyncTimeoutRef.current = window.setTimeout(() => {
+      resyncTimeoutRef.current = null
+      runBarBoundaryResync()
+      resyncStatsRef.current.nextResyncAt = performance.now() + resyncMs
+      resyncIntervalRef.current = window.setInterval(() => {
+        runBarBoundaryResync()
+        resyncStatsRef.current.nextResyncAt = performance.now() + resyncMs
+      }, resyncMs)
+    }, msUntilNext)
+    console.log('[drift-monitor] scheduled', { resyncMs: Math.round(resyncMs), firstInMs: Math.round(msUntilNext) })
+  }, [getResyncMs, runBarBoundaryResync])
+  scheduleResyncRef.current = scheduleResync
+
+  /**
+   * Hide a slot. The pooled loop element is NOT stopped or destroyed — it keeps
+   * running silently so its phase stays locked for a later re-assignment. We only
+   * fade its gain to 0 and drop the slot → element mapping + slot-keyed metadata.
+   * One-shot pads (archived packs only) are paused since they never run silently.
+   */
   const disposeAssignedAudio = useCallback((slotIndex: number) => {
     const audio = assignedAudioRef.current.get(slotIndex)
-    if (!audio) return
     clearAssignedDebugInterval(slotIndex)
-    if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
-      console.log('[beat3] dispose', { slot: slotIndex })
-    }
-    cancelGainRamp(audio)  // Stop any in-flight ramp before disposal
-    assignedAudioRef.current.delete(slotIndex)
-    stopAssignedAudioElement(audio)
-    // Disconnect and remove the Web Audio source node for this slot
-    const srcNode = sourceNodesRef.current.get(slotIndex)
-    if (srcNode) {
-      try { srcNode.disconnect() } catch { /* noop — already disconnected */ }
-      sourceNodesRef.current.delete(slotIndex)
-    }
-    padVolumeRef.current.delete(slotIndex)
-    padOneShotRef.current.delete(slotIndex)
-    slotLastPlayTimeRef.current.delete(slotIndex)
-    // Cancel any pending quantize start timer for this slot
+    // Cancel any legacy pending quantize start timer for this slot.
     const qTimer = quantizeTimersRef.current.get(slotIndex)
     if (qTimer !== undefined) {
       window.clearTimeout(qTimer)
       quantizeTimersRef.current.delete(slotIndex)
     }
+    if (audio) {
+      cancelGainRamp(audio)
+      const isOneShot = padOneShotRef.current.get(slotIndex) ?? false
+      if (isOneShot) {
+        // One-shots are not part of the running pool — silence + stop the source.
+        audio.volume = 0
+        audio.stop()
+      } else {
+        // Loop pad: keep its source running silently in the pool, just fade out.
+        audio.volume = 0
+      }
+    }
+    assignedAudioRef.current.delete(slotIndex)
+    padVolumeRef.current.delete(slotIndex)
+    padOneShotRef.current.delete(slotIndex)
+    slotLastPlayTimeRef.current.delete(slotIndex)
     if (import.meta.env.DEV) {
-      console.log('[audio] removed slot stopped', { slot: slotIndex })
-      console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
+      console.log('[transport] slot hidden (pool loop kept alive)', {
+        slot: slotIndex,
+        assignedSlots: assignedAudioRef.current.size,
+      })
     }
   }, [clearAssignedDebugInterval])
 
+  /**
+   * Assign a pad to a slot under the GLOBAL TRANSPORT model.
+   *
+   * This NEVER creates a new audio element and NEVER resets currentTime. It maps
+   * the slot to the pad's already-running pool element and reveals it with a gain
+   * ramp (the loop is already in phase because the whole pool started together).
+   *
+   *  - deferPlayback: just build the pool + register the mapping silently (used
+   *    by replay/shared-mix hydration before the transport starts).
+   *  - no active session: start the global transport, which plays every pool loop
+   *    and reveals this freshly-mapped slot.
+   *  - active session: ramp this slot's pool element up — no play()-from-zero.
+   */
   const createAssignedAudio = useCallback(
     async (
       pad: PadDefinition,
       slotIndex: number,
       options?: { deferPlayback?: boolean },
     ): Promise<boolean> => {
-      disposeAssignedAudio(slotIndex)
-      const url = resolveAudioSrc(pad, activePackId)
-      if (!url) {
-        console.warn('[audio] assigned skipped — no url', {
+      // Build (or reuse) the pack's transport pool, then grab this pad's voice.
+      await buildPackTransport(activePackId)
+      const audio = packTransportRef.current.get(pad.id)
+      if (!audio) {
+        console.warn('[transport] assign skipped — pool voice missing', {
           slot: slotIndex,
           padId: pad.id,
           packId: activePackId,
@@ -2596,143 +2964,51 @@ function App() {
         return false
       }
 
-      // Store per-pad volume multiplier and playbackMode before creating the element
       const packPad = packPadForGamePad(pad, AUDIO_PACKS[activePackId])
       const padVol = packPad?.volume ?? 1.0
       const isOneShot = packPad?.playbackMode === 'one-shot'
+
+      // If this slot already holds a DIFFERENT pool element, hide that one first.
+      const existing = assignedAudioRef.current.get(slotIndex)
+      if (existing && existing !== audio) disposeAssignedAudio(slotIndex)
+
       padVolumeRef.current.set(slotIndex, padVol)
       padOneShotRef.current.set(slotIndex, isOneShot)
-
-      const audio = new Audio(url)
-      audio.loop = !isOneShot
-      audio.preload = 'auto'
-      audio.volume = 0
-      if (import.meta.env.DEV) {
-        audio.onpause = () => console.log('[assigned] paused', slotIndex)
-        audio.onended = () => console.log('[assigned] ended', slotIndex)
-      }
-      audio.onerror = (event) => console.warn('[assigned] error', slotIndex, event)
-
-      // DEV: tag Beat 3 elements for lifecycle tracing
-      if (import.meta.env.DEV && pad.id === 'beat-2') {
-        ;(audio as { __beat3?: boolean }).__beat3 = true
-        audio.onpause = () => console.log('[beat3] audio paused', { slot: slotIndex, ct: audio.currentTime.toFixed(3) })
-        console.log('[beat3] audio element created', { slot: slotIndex, padId: pad.id, url })
-      }
-
       assignedAudioRef.current.set(slotIndex, audio)
 
-      // Route through master compressor (safe — skipped if Web Audio unavailable)
-      try {
-        const ac = ensureAudioCtx()
-        if (ac) {
-          if (ac.ctx.state === 'suspended') void ac.ctx.resume()
-          const srcNode = ac.ctx.createMediaElementSource(audio)
-          srcNode.connect(ac.compressor)
-          sourceNodesRef.current.set(slotIndex, srcNode)
-        }
-      } catch (e) {
-        console.warn('[audio] compressor routing skipped', e)
-      }
-
-      try {
-        await waitForAssignedAudioReady(audio)
-      } catch (error) {
-        console.warn('[audio] assigned load failed', {
-          slot: slotIndex,
-          padId: pad.id,
-          url,
-          error,
-        })
-        assignedAudioRef.current.delete(slotIndex)
-        return false
-      }
-
-      if (pad.id === 'beat-0') {
-        setAssignedBeatOneUrl(audio.src)
-      }
-
-      // ── Dev-only loop timing validation ─────────────────────────────────
-      if (import.meta.env.DEV && !isOneShot && audio.duration > 0) {
-        validateLoopTiming(
-          `${pad.id} (slot ${slotIndex})`,
-          audio.duration,
-          packPad?.bpm ?? null,
-          packPad?.bars ?? null,
-        )
-      }
-
-      // ── Drift correction disabled in recovery build ──────────────────────────
-      // playbackRate changes engage the browser's real-time pitch-shift DSP on
-      // every active element, adding significant CPU load.  Delta Pack pads all
-      // have allowDriftCorrection:false so this block was always a no-op here.
-      // Kept as a comment for reference:
-      // if (packPad?.allowDriftCorrection && packPad.bpm && packPad.bars) {
-      //   const rate = computePlaybackRate(audio.duration, packPad.bpm, packPad.bars, true)
-      //   if (rate !== 1.0) audio.playbackRate = rate
-      // }
+      if (pad.id === 'beat-0') setAssignedBeatOneUrl(audio.src)
 
       if (import.meta.env.DEV) {
-        console.log('[audio] assigned created', {
+        console.log('[transport] slot mapped → pool element', {
           slot: slotIndex,
           padId: pad.id,
-          url: audio.src,
           padVol,
           isOneShot,
+          running: !audio.paused,
         })
       }
 
       if (options?.deferPlayback) return true
 
+      const slotMuted = mutedSlotsRef.current.has(slotIndex) || masterMutedRef.current
+
       if (masterCycleIntervalRef.current === null || !isPlayingRef.current) {
-        // No active session — start a fresh loop cycle
+        // No active session yet — start the whole pool in one synchronized batch.
         startOrRestartLoops()
+      } else if (slotMuted) {
+        audio.volume = 0
+      } else if (isOneShot) {
+        // One-shot reveal (archived packs only): fire once, no retrigger timer.
+        audio.startAt(audio.ctx.currentTime + 0.02, 0)
+        scheduleGainRamp(audio, padEffVol(slotIndex))
       } else {
-        // Session is running — schedule quantized start on next beat/bar boundary
-        const quantize = isReplayingMixRef.current
-          ? 'immediate'  // bypass quantization during replay to preserve timeline accuracy
-          : resolvePlaybackQuantization(packPad)
-        const delay = msUntilNextBoundary(musicalClockRef.current, quantize)
-
-        const playWithFade = () => {
-          if (!assignedAudioRef.current.has(slotIndex)) return
-          if (!isPlayingRef.current) return
-          startAssignedSlotAudio(slotIndex, audio, { fadeIn: true, forceRestart: true })
-          if (import.meta.env.DEV) console.log('[audio] quantized play resolved', { slot: slotIndex, quantize, delay })
-        }
-
-        if (delay <= 20) {
-          playWithFade()
-        } else {
-          if (import.meta.env.DEV) console.log('[audio] quantized start scheduled', { slot: slotIndex, quantize, delayMs: Math.round(delay) })
-          const tid = window.setTimeout(() => {
-            quantizeTimersRef.current.delete(slotIndex)
-            playWithFade()
-          }, delay)
-          quantizeTimersRef.current.set(slotIndex, tid)
-        }
+        // Loop pad — already running in phase. Reveal with a gain ramp only.
+        scheduleGainRamp(audio, padEffVol(slotIndex))
       }
       return true
     },
-    [activePackId, disposeAssignedAudio, ensureAudioCtx, startOrRestartLoops, startAssignedSlotAudio],
+    [activePackId, buildPackTransport, disposeAssignedAudio, startOrRestartLoops, padEffVol],
   )
-
-  /**
-   * Resolve the playback quantization mode for a pack pad.
-   * Explicit pack config wins; falls back to sensible category defaults.
-   * One-shots always use 'immediate' unless explicitly overridden in pack config.
-   *
-   * WHERE TO CONFIGURE: set playbackQuantization on the pad in cyberpunkPack1.ts
-   * (or any other pack) to override these defaults.
-   *
-   * TO DISABLE GLOBALLY: change the default return to 'immediate'.
-   */
-  function resolvePlaybackQuantization(packPad: PackPadAudio | undefined): QuantizeMode {
-    if (packPad?.playbackQuantization) return packPad.playbackQuantization
-    if (packPad?.playbackMode === 'one-shot') return 'immediate'
-    if (packPad?.category === 'voice') return 'beat'
-    return 'bar'  // beats, bass, melody, atmosphere → bar-quantized
-  }
 
   const ensureAssignedAudioForSlots = useCallback(
     async (slotList: (string | null)[]) => {
@@ -2844,6 +3120,9 @@ function App() {
     disposeAssignedAudio(index)
     if (!hasRemainingAssigned) {
       clearMasterCycle()
+      // Stage is empty — park the silent pool so its decoders stop consuming CPU.
+      // It stays loaded; the next assignment restarts it from bar 1 in sync.
+      pausePackTransport()
       isPlayingRef.current = false
       setIsPlaying(false)
       setTransportStatus('Stopped')
@@ -2860,7 +3139,7 @@ function App() {
       return next
     })
     recordEvent({ tp: 'sc', si: index })
-  }, [clearMasterCycle, disposeAssignedAudio, slots, recordEvent])
+  }, [clearMasterCycle, disposeAssignedAudio, pausePackTransport, slots, recordEvent])
 
   useEffect(() => {
     if (!shareMix || !stageEntered || sharedMixHydratedRef.current) return
@@ -2956,123 +3235,65 @@ function App() {
     masterMutedRef.current = nextMuted
     setMasterMuted(nextMuted)
 
+    // ── PAUSE / RESUME via the master gain bus ──────────────────────────────────
+    // The sample-accurate buffer engine keeps every looping source running on the
+    // AudioContext clock; pause simply closes the master gain bus (and lets the
+    // browser suspend the context to save CPU), resume re-opens it. Because no
+    // source is ever stopped or reseeked, all loops are still perfectly in phase
+    // on resume — the lowest-CPU, most stable option.
+    const ctx = audioCtxRef.current
+    const masterGain = masterGainNodeRef.current
+
     if (nextMuted) {
-      // ── TRUE TRANSPORT FREEZE ────────────────────────────────────────────────
-      // 1. Capture clock elapsed so we can re-anchor on resume.
-      pauseClockElapsedRef.current =
-        musicalClockRef.current.originMs > 0
-          ? performance.now() - musicalClockRef.current.originMs
-          : 0
-
-      // 2. Snapshot each element's exact playback position, then pause it.
-      //    All pauses happen synchronously within a single forEach — no stagger.
-      pauseOffsetsRef.current.clear()
-      assignedAudioRef.current.forEach((audio, slot) => {
-        pauseOffsetsRef.current.set(slot, audio.currentTime)
-        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
-          console.log('[beat3] transport FREEZE', { slot, savedTime: audio.currentTime.toFixed(3) })
-        }
-        audio.volume = 0
-        audio.pause()
-      })
-
+      // Close the bus with a short click-free ramp; freeze the DEV drift monitor.
+      if (resyncTimeoutRef.current !== null) {
+        window.clearTimeout(resyncTimeoutRef.current)
+        resyncTimeoutRef.current = null
+      }
+      if (resyncIntervalRef.current !== null) {
+        window.clearInterval(resyncIntervalRef.current)
+        resyncIntervalRef.current = null
+      }
+      if (ctx && masterGain) {
+        const now = ctx.currentTime
+        masterGain.gain.cancelScheduledValues(now)
+        masterGain.gain.setValueAtTime(masterGain.gain.value, now)
+        masterGain.gain.linearRampToValueAtTime(0, now + 0.03)
+      }
       if (import.meta.env.DEV) {
-        console.log('[transport] FREEZE', {
-          slots: assignedAudioRef.current.size,
-          clockElapsedMs: Math.round(pauseClockElapsedRef.current),
+        console.log('[transport] PAUSE (master gain → 0, clock continues)', {
+          poolVoices: packTransportRef.current.size,
+          assignedSlots: assignedAudioRef.current.size,
+          ctxState: ctx?.state ?? 'none',
         })
       }
     } else {
-      // ── TRUE TRANSPORT RESUME (synchronized batch) ───────────────────────────
-      // Phase 1 — re-anchor the musical clock so quantization stays accurate.
-      //            newOrigin makes the clock think it started clockElapsed ms ago,
-      //            which matches the audio positions we are about to restore.
-      if (musicalClockRef.current.originMs > 0) {
-        musicalClockRef.current = {
-          ...musicalClockRef.current,
-          originMs: performance.now() - pauseClockElapsedRef.current,
-        }
-      }
-
-      // Phase 2 — wake the AudioContext if the browser suspended it during pause.
-      if (audioCtxRef.current?.state === 'suspended') {
-        void audioCtxRef.current.resume().catch((err) =>
+      // Wake the context if the browser suspended it, then re-open the bus.
+      if (ctx?.state === 'suspended') {
+        void ctx.resume().catch((err) =>
           console.warn('[transport] AudioContext resume failed', err),
         )
       }
-
-      // Phase 3 — restore all currentTime positions BEFORE any play() call.
-      //            This ensures the seek is complete for every element at the
-      //            same JS synchronous execution point.
-      assignedAudioRef.current.forEach((audio, slot) => {
-        const storedTime = pauseOffsetsRef.current.get(slot)
-        if (storedTime !== undefined) {
-          // Pad was playing when paused — restore its exact position.
-          if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
-            console.log('[beat3] transport RESUME restoring currentTime', {
-              slot,
-              from: audio.currentTime.toFixed(3),
-              to: storedTime.toFixed(3),
-            })
-          }
-          audio.currentTime = storedTime
-        } else if (audio.duration > 0) {
-          // Pad was added while paused — clock-estimate its position so it
-          // joins the groove rather than starting from 0.
-          const estimated = pauseClockElapsedRef.current % audio.duration
-          audio.currentTime = isFinite(estimated) ? estimated : 0
-        }
-      })
-
-      // Phase 4 — start all audio in a single synchronous batch.
-      //            All play() calls are issued without any await between them
-      //            so the browser receives them within the same task and can
-      //            align them to the same audio render quantum (~3 ms frame).
-      //            Volumes are held at 0 until Phase 5 ramp to avoid a hard
-      //            click caused by audio suddenly appearing at full amplitude.
-      //            Record the play timestamp BEFORE issuing play() so the
-      //            settle-period guard in runPhaseCorrectionPass sees the
-      //            correct base time even if play() resolves asynchronously.
-      assignedAudioRef.current.forEach((audio, slot) => {
-        audio.volume = 0
-        slotLastPlayTimeRef.current.set(slot, performance.now())
-        if (import.meta.env.DEV && (audio as { __beat3?: boolean }).__beat3) {
-          console.log('[beat3] transport RESUME play() queued', {
-            slot,
-            restoredTime: pauseOffsetsRef.current.get(slot)?.toFixed(3),
-          })
-        }
-        void audio.play().catch((err) =>
-          console.warn('[transport] resume play failed', { slot, err }),
-        )
-      })
-
-      // Phase 5 — ramp non-muted slots to their target volume after a brief
-      //            settle (~30 ms) so the audio decoder is delivering samples
-      //            before the gain opens.  Eliminates the click/thump that
-      //            occurs when full-amplitude audio appears instantaneously.
-      window.setTimeout(() => {
-        assignedAudioRef.current.forEach((audio, slot) => {
-          if (!mutedSlotsRef.current.has(slot)) {
-            scheduleGainRamp(audio, padEffVol(slot), 40)
-          }
-        })
-      }, 30)
-
-      pauseOffsetsRef.current.clear()
-
+      if (ctx && masterGain) {
+        const now = ctx.currentTime
+        masterGain.gain.cancelScheduledValues(now)
+        masterGain.gain.setValueAtTime(masterGain.gain.value, now)
+        masterGain.gain.linearRampToValueAtTime(1, now + 0.03)
+      }
+      // Restart the DEV drift monitor from the resumed timeline.
+      scheduleResyncRef.current()
       if (import.meta.env.DEV) {
-        console.log('[transport] RESUME', {
-          slots: assignedAudioRef.current.size,
-          clockElapsedMs: Math.round(pauseClockElapsedRef.current),
-          audioCtxState: audioCtxRef.current?.state ?? 'none',
+        console.log('[transport] RESUME (master gain → 1)', {
+          poolVoices: packTransportRef.current.size,
+          assignedSlots: assignedAudioRef.current.size,
+          ctxState: ctx?.state ?? 'none',
         })
       }
     }
 
     setTransportStatus(nextMuted ? 'Paused' : (isPlayingRef.current ? 'Playing' : 'Stopped'))
     recordEvent({ tp: 'mm', mu: nextMuted })
-  }, [padEffVol, recordEvent])
+  }, [recordEvent])
 
   const handleStopReset = useCallback(() => {
     if (import.meta.env.DEV) console.log('[audio] reset stopping all')
@@ -3080,10 +3301,12 @@ function App() {
     clearReplayTimers()
     clearMasterCycle()
     clearAllAssignedDebugIntervals()
-    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
     slotLastPlayTimeRef.current.clear()
-    if (import.meta.env.DEV) console.log('[audio] assignedAudioRef size', assignedAudioRef.current.size)
+    // Full stop also tears down the global transport pool so no silent decoders
+    // keep running. The next play (or pack switch) rebuilds it fresh.
+    disposePackTransport()
+    if (import.meta.env.DEV) console.log('[transport] reset — pool disposed')
     masterMutedRef.current = false
     setMasterMuted(false)
     isPlayingRef.current = false
@@ -3094,7 +3317,7 @@ function App() {
     setMutedSlots(new Set())
     setSelectedPadId(null)
     recordEvent({ tp: 'pl', pl: false })
-  }, [clearAllAssignedDebugIntervals, clearMasterCycle, clearReplayTimers, recordEvent])
+  }, [clearAllAssignedDebugIntervals, clearMasterCycle, clearReplayTimers, disposePackTransport, recordEvent])
 
   const handlePackChange = useCallback(
     (packId: ActivePackId) => {
@@ -3405,11 +3628,11 @@ function App() {
     // Cancel any existing replay
     clearReplayTimers()
 
-    // ── 1. Stop all current audio ──────────────────────────────────────────
+    // ── 1. Stop all current audio + tear down the existing pool ────────────
     clearMasterCycle()
     clearAllAssignedDebugIntervals()
-    assignedAudioRef.current.forEach((audio) => stopAssignedAudioElement(audio))
     assignedAudioRef.current.clear()
+    disposePackTransport()
 
     // ── 2. Apply initial mix state ─────────────────────────────────────────
     masterMutedRef.current = init.pause
@@ -3428,35 +3651,24 @@ function App() {
     setIsReplayingMix(true)
     setMixToast('Replaying mix from the start…')
 
-    // ── 3. Load audio for initial slots using explicit pack (no stale closure) ─
+    // ── 3. Build the global transport pool for the recorded pack, then map the
+    //        initial slots to their pooled elements (explicit pack — no stale
+    //        closure on activePackId mid replay-init). ─────────────────────────
+    await buildPackTransport(initPack)
     for (let i = 0; i < init.slots.length; i++) {
       const padId = init.slots[i]
       if (!padId) continue
       const pad = PAD_BY_ID[padId]
       if (!pad) continue
-      const url = resolveAudioSrc(pad, initPack)
-      if (!url) continue
-      disposeAssignedAudio(i)
+      const audio = packTransportRef.current.get(pad.id)
+      if (!audio) {
+        console.warn('[replay] pool voice missing', { slot: i, padId })
+        continue
+      }
       const replayPackPad = packPadForGamePad(pad, AUDIO_PACKS[initPack])
-      const replayIsOneShot = replayPackPad?.playbackMode === 'one-shot'
       padVolumeRef.current.set(i, replayPackPad?.volume ?? 1.0)
-      padOneShotRef.current.set(i, replayIsOneShot)
-      const audio = new Audio(url)
-      audio.loop = !replayIsOneShot
-      audio.preload = 'auto'
-      audio.volume = 0
-      if (import.meta.env.DEV) {
-        audio.onpause = () => console.log('[replay] audio paused', i)
-      }
-      audio.onerror = (e) => console.warn('[replay] audio error', { slot: i, padId, e })
+      padOneShotRef.current.set(i, replayPackPad?.playbackMode === 'one-shot')
       assignedAudioRef.current.set(i, audio)
-      try {
-        await waitForAssignedAudioReady(audio)
-        if (import.meta.env.DEV) console.log('[replay] audio loaded', { slot: i, padId })
-      } catch {
-        console.warn('[replay] audio load failed', { slot: i, padId })
-        assignedAudioRef.current.delete(i)
-      }
     }
 
     // ── 4. Start playback if the recording began playing ───────────────────
@@ -3498,7 +3710,8 @@ function App() {
     clearReplayTimers,
     clearMasterCycle,
     clearAllAssignedDebugIntervals,
-    disposeAssignedAudio,
+    buildPackTransport,
+    disposePackTransport,
     startOrRestartLoops,
   ])
 
@@ -3863,6 +4076,8 @@ function App() {
               <div>Pads: {devPerfPanel.activePads} · Nodes: {devPerfPanel.nodes}</div>
               <div>Soft corr/10s: {devPerfPanel.softCorr} · Hard snaps: {devPerfPanel.hardSnaps}</div>
               <div>AudioCtx: {devPerfPanel.ctxState}</div>
+              <div>Resync in: {devPerfPanel.nextResyncS}s · last drift: {devPerfPanel.lastDriftMs}ms</div>
+              <div>Corrected: {devPerfPanel.lastCorrected} · total resyncs: {devPerfPanel.resyncs}</div>
             </div>
           )}
           <PackCompatibilityPanel />
